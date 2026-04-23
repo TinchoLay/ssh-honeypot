@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSH Honeypot Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0d1117; color: #e6edf3; font-family: monospace; padding: 20px; }
+        h1 { color: #58a6ff; text-align: center; margin-bottom: 8px; font-size: 22px; }
+        .subtitle { text-align: center; color: #8b949e; margin-bottom: 24px; font-size: 13px; }
+        .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 24px; }
+        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
+        .card h2 { color: #8b949e; font-size: 12px; text-transform: uppercase; margin-bottom: 8px; }
+        .card .number { font-size: 36px; font-weight: bold; color: #58a6ff; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+        .box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+        .box h3 { color: #f0883e; font-size: 13px; margin-bottom: 12px; border-bottom: 1px solid #30363d; padding-bottom: 8px; }
+        .item { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #21262d; font-size: 13px; }
+        .item:last-child { border-bottom: none; }
+        .item .val { color: #3fb950; font-weight: bold; }
+        .recent { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+        .recent h3 { color: #f0883e; font-size: 13px; margin-bottom: 12px; border-bottom: 1px solid #30363d; padding-bottom: 8px; }
+        .log { font-size: 12px; padding: 6px 0; border-bottom: 1px solid #21262d; color: #8b949e; }
+        .log:last-child { border-bottom: none; }
+        .log .ip { color: #ff7b72; }
+        .log .country { color: #58a6ff; }
+        .log .creds { color: #3fb950; }
+        .dot { display: inline-block; width: 8px; height: 8px; background: #3fb950; border-radius: 50%; margin-right: 6px; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .status { text-align: center; margin-bottom: 20px; font-size: 13px; color: #8b949e; }
+    </style>
+</head>
+<body>
+    <h1>🍯 SSH Honeypot Dashboard</h1>
+    <p class="subtitle">Monitoreo de intentos de acceso no autorizados en tiempo real</p>
+    <div class="status"><span class="dot"></span>Conectado y monitoreando</div>
+
+    <div class="cards">
+        <div class="card">
+            <h2>Total de ataques</h2>
+            <div class="number" id="total">{{ stats.total }}</div>
+        </div>
+        <div class="card">
+            <h2>IPs únicas</h2>
+            <div class="number" id="unique_ips">{{ stats.unique_ips }}</div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="box">
+            <h3>👤 Top usuarios</h3>
+            <div id="top_users">
+                {% for item in stats.top_users %}
+                <div class="item">
+                    <span>{{ item.name }}</span>
+                    <span class="val">{{ item.count }}x</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        <div class="box">
+            <h3>🔑 Top contraseñas</h3>
+            <div id="top_passwords">
+                {% for item in stats.top_passwords %}
+                <div class="item">
+                    <span>{{ item.name }}</span>
+                    <span class="val">{{ item.count }}x</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        <div class="box">
+            <h3>🌍 Top países</h3>
+            <div id="top_countries">
+                {% for item in stats.top_countries %}
+                <div class="item">
+                    <span>{{ item.name }}</span>
+                    <span class="val">{{ item.count }}x</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <div class="recent">
+        <h3>⚡ Últimos ataques</h3>
+        <div id="recent_attacks">
+            {% for a in stats.recent %}
+            <div class="log">
+                <span>{{ a.timestamp }}</span> —
+                <span class="ip">{{ a.ip }}</span>
+                (<span class="country">{{ a.country }}</span>) →
+                <span class="creds">{{ a.username }}:{{ a.password }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+
+        socket.on("update", function(stats) {
+            // Actualizar números
+            document.getElementById("total").textContent = stats.total;
+            document.getElementById("unique_ips").textContent = stats.unique_ips;
+
+            // Actualizar top usuarios
+            document.getElementById("top_users").innerHTML =
+                stats.top_users.map(i =>
+                    `<div class="item"><span>${i.name}</span><span class="val">${i.count}x</span></div>`
+                ).join("");
+
+            // Actualizar top contraseñas
+            document.getElementById("top_passwords").innerHTML =
+                stats.top_passwords.map(i =>
+                    `<div class="item"><span>${i.name}</span><span class="val">${i.count}x</span></div>`
+                ).join("");
+
+            // Actualizar top países
+            document.getElementById("top_countries").innerHTML =
+                stats.top_countries.map(i =>
+                    `<div class="item"><span>${i.name}</span><span class="val">${i.count}x</span></div>`
+                ).join("");
+
+            // Actualizar últimos ataques
+            document.getElementById("recent_attacks").innerHTML =
+                stats.recent.map(a =>
+                    `<div class="log">
+                        <span>${a.timestamp}</span> —
+                        <span class="ip">${a.ip}</span>
+                        (<span class="country">${a.country}</span>) →
+                        <span class="creds">${a.username}:${a.password}</span>
+                    </div>`
+                ).join("");
+        });
+    </script>
+</body>
+</html>

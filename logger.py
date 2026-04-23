@@ -62,3 +62,9 @@ def save_attempt(ip, username, password):
         f.write("\n")
     
     print(f"[{attempt['timestamp']}] {ip} ({geo['country']} - {geo['city']}) → {username}:{password}")
+    # Notificar al dashboard si está corriendo
+    try:
+        from dashboard import notify_new_attempt
+        notify_new_attempt(attempt)
+    except Exception:
+        pass
