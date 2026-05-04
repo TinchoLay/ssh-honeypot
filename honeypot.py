@@ -4,28 +4,36 @@ import paramiko
 from logger import save_attempt
 from config import HOST, PORT, BANNER, MAX_CONNECTIONS
 from stats import show_stats
+from fake_shell import FakeShell, manejar_shell
 
 host_key = paramiko.RSAKey.generate(2048)
-
-class HoneypotServer(paramiko.ServerInterface):
-    def __init__(self, client_ip):
-        self.client_ip = client_ip
-
-    def check_auth_password(self, username, password):
-        save_attempt(self.client_ip, username, password)
-        return paramiko.AUTH_FAILED
-
-    def get_allowed_auths(self, username):
-        return "password"
 
 def handle_connection(client_socket, client_ip):
     try:
         transport = paramiko.Transport(client_socket)
         transport.local_version = BANNER
         transport.add_server_key(host_key)
-        server = HoneypotServer(client_ip)
+        
+        # Usar la FakeShell en vez del servidor básico
+        server = FakeShell(client_ip)
         transport.start_server(server=server)
-        transport.join(timeout=10)
+        
+        # Esperar a que el cliente abra un canal
+        channel = transport.accept(20)
+        
+        if channel is None:
+            return
+        
+        # Esperar a que pida una shell
+        server.event.wait(10)
+        
+        if not server.event.is_set():
+            return
+        
+        # Manejar la sesión interactiva
+        username = getattr(server, "username", "unknown")
+        manejar_shell(channel, client_ip, username)
+    
     except Exception:
         pass
     finally:
@@ -41,7 +49,6 @@ def start_honeypot():
     print("   Escribí 'stats' y Enter para ver el resumen")
     print("   Escribí 'exit' y Enter para cerrar\n")
 
-    # Hilo separado para escuchar comandos mientras el honeypot corre
     def escuchar_comandos():
         while True:
             try:
@@ -51,11 +58,11 @@ def start_honeypot():
                 elif comando.strip().lower() == "exit":
                     print("\nCerrando honeypot...")
                     show_stats()
+                    import os
                     os._exit(0)
             except Exception:
                 break
 
-    import os
     hilo_comandos = threading.Thread(target=escuchar_comandos, daemon=True)
     hilo_comandos.start()
 
