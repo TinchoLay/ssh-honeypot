@@ -1,9 +1,11 @@
 import json
 import os
 import requests
+import threading
 from datetime import datetime
 from config import LOG_FILE, GEO_API_URL, GEO_ENABLED
 from alertas import check_y_alertar
+from threat_intel import analizar_ip
 
 def get_geolocation(ip):
     if ip.startswith("127.") or ip.startswith("192.168.") or ip == "localhost":
@@ -63,6 +65,13 @@ def save_attempt(ip, username, password):
     
     # Verificar si hay que mandar alerta de fuerza bruta
     check_y_alertar(ip, geo["country"], geo["city"], username, password)
+    
+    # Consultar threat intelligence en background
+    threading.Thread(
+        target=analizar_ip,
+        args=(ip,),
+        daemon=True
+    ).start()
     
     # Notificar al dashboard si está corriendo
     try:

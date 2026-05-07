@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 mapa_ataques.html
 logs/attempts.json
+logs/threat_intel.json
