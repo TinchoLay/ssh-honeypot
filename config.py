@@ -21,3 +21,10 @@ THREAT_INTEL_ENABLED = True
 ABUSEIPDB_KEY = "b8e27b1781fa95a90f0dd4f1914265f50076180570441187f42fc95080f5c8358b16c600b8529844"
 SHODAN_KEY = "r20OrG5hZpiJSmap5G7jNIlpBYqJe2Z8"
 THREAT_LOG = "logs/threat_intel.json"
+# Multi-servicio
+HTTP_PORT = 8080
+FTP_PORT = 2121
+HTTP_ENABLED = True
+FTP_ENABLED = True
+HTTP_LOG = "logs/http_attempts.json"
+FTP_LOG = "logs/ftp_attempts.json"

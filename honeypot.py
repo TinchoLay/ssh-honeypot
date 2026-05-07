@@ -5,6 +5,9 @@ from logger import save_attempt
 from config import HOST, PORT, BANNER, MAX_CONNECTIONS
 from stats import show_stats
 from fake_shell import FakeShell, manejar_shell
+from config import HOST, PORT, BANNER, MAX_CONNECTIONS, HTTP_ENABLED, FTP_ENABLED
+from http_honeypot import start_http_honeypot
+from ftp_honeypot import start_ftp_honeypot
 
 host_key = paramiko.RSAKey.generate(2048)
 
@@ -68,6 +71,12 @@ def start_honeypot():
 
     hilo_comandos = threading.Thread(target=escuchar_comandos, daemon=True)
     hilo_comandos.start()
+
+# Levantar servicios adicionales en hilos separados
+    if HTTP_ENABLED:
+        threading.Thread(target=start_http_honeypot, daemon=True).start()
+    if FTP_ENABLED:
+        threading.Thread(target=start_ftp_honeypot, daemon=True).start()
 
     try:
         while True:

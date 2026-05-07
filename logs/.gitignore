@@ -5,3 +5,5 @@ mapa_ataques.html
 logs/attempts.json
 logs/threat_intel.json
 logs/fingerprints.json
+logs/http_attempts.json
+logs/ftp_attempts.json
