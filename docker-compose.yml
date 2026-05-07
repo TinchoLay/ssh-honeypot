@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  honeypot:
+    build: .
+    container_name: ssh-honeypot
+    ports:
+      - "2222:2222"    # SSH
+      - "8080:8080"    # HTTP
+      - "2121:2121"    # FTP
+    volumes:
+      # Montar la carpeta logs en tu PC para ver los datos capturados
+      # aunque el contenedor se reinicie
+      - ./logs:/app/logs
+    environment:
+      - GEO_ENABLED=true
+      - EMAIL_ENABLED=false
+      - THREAT_INTEL_ENABLED=false
+    restart: unless-stopped    # Se reinicia automáticamente si falla

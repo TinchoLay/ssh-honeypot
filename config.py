@@ -4,23 +4,29 @@ PORT = 2222            # Puerto falso de SSH
 BANNER = "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3"  # Se hace pasar por Ubuntu
 LOG_FILE = "logs/attempts.json"
 MAX_CONNECTIONS = 5    # Conexiones simultáneas máximas
+
+import os
+
 # Geolocalización
 GEO_API_URL = "http://ip-api.com/json/"
-GEO_ENABLED = True
+GEO_ENABLED = os.getenv("GEO_ENABLED", "true").lower() == "true"
+
 # Alertas por email
-EMAIL_ENABLED = True
-EMAIL_SENDER = "martinjchancalay@gmail.com"
-EMAIL_PASSWORD = "qzyo bmav ddoi qmgk"
-EMAIL_RECEIVER = "martinjchancalay@gmail.com"
+EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "false").lower() == "true"
+EMAIL_SENDER = os.getenv("EMAIL_SENDER", "")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
+EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER", "")
 EMAIL_SMTP = "smtp.gmail.com"
 EMAIL_PORT = 587
-ALERT_THRESHOLD = 2
-ALERT_WINDOW = 60
+ALERT_THRESHOLD = int(os.getenv("ALERT_THRESHOLD", "5"))
+ALERT_WINDOW = int(os.getenv("ALERT_WINDOW", "60"))
+
 # Threat Intelligence
-THREAT_INTEL_ENABLED = True
-ABUSEIPDB_KEY = "b8e27b1781fa95a90f0dd4f1914265f50076180570441187f42fc95080f5c8358b16c600b8529844"
-SHODAN_KEY = "r20OrG5hZpiJSmap5G7jNIlpBYqJe2Z8"
+THREAT_INTEL_ENABLED = os.getenv("THREAT_INTEL_ENABLED", "false").lower() == "true"
+ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY", "")
+SHODAN_KEY = os.getenv("SHODAN_KEY", "")
 THREAT_LOG = "logs/threat_intel.json"
+
 # Multi-servicio
 HTTP_PORT = 8080
 FTP_PORT = 2121
