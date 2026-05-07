@@ -4,3 +4,4 @@ __pycache__/
 mapa_ataques.html
 logs/attempts.json
 logs/threat_intel.json
+logs/fingerprints.json

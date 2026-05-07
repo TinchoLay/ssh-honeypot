@@ -6,6 +6,7 @@ from datetime import datetime
 from config import LOG_FILE, GEO_API_URL, GEO_ENABLED
 from alertas import check_y_alertar
 from threat_intel import analizar_ip
+from fingerprint import hacer_fingerprint
 
 def get_geolocation(ip):
     if ip.startswith("127.") or ip.startswith("192.168.") or ip == "localhost":
@@ -70,6 +71,13 @@ def save_attempt(ip, username, password):
     threading.Thread(
         target=analizar_ip,
         args=(ip,),
+        daemon=True
+    ).start()
+
+    # Fingerprinting del atacante
+    threading.Thread(
+        target=hacer_fingerprint,
+        args=(ip, username, password),
         daemon=True
     ).start()
     

@@ -13,27 +13,30 @@ def handle_connection(client_socket, client_ip):
         transport = paramiko.Transport(client_socket)
         transport.local_version = BANNER
         transport.add_server_key(host_key)
-        
-        # Usar la FakeShell en vez del servidor básico
+
         server = FakeShell(client_ip)
         transport.start_server(server=server)
-        
-        # Esperar a que el cliente abra un canal
+
+        # Capturar el banner DESPUÉS de la negociación
+        try:
+            from fingerprint import registrar_banner
+            remote_version = transport.remote_version
+            if remote_version:
+                registrar_banner(client_ip, remote_version)
+        except Exception:
+            pass
+
         channel = transport.accept(20)
-        
         if channel is None:
             return
-        
-        # Esperar a que pida una shell
+
         server.event.wait(10)
-        
         if not server.event.is_set():
             return
-        
-        # Manejar la sesión interactiva
+
         username = getattr(server, "username", "unknown")
         manejar_shell(channel, client_ip, username)
-    
+
     except Exception:
         pass
     finally:
