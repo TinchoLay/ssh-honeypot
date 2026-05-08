@@ -7,6 +7,7 @@ from config import LOG_FILE, GEO_API_URL, GEO_ENABLED
 from alertas import check_y_alertar
 from threat_intel import analizar_ip
 from fingerprint import hacer_fingerprint
+from ml_classifier import registrar_intento_ml, clasificar_atacante
 
 def get_geolocation(ip):
     if ip.startswith("127.") or ip.startswith("192.168.") or ip == "localhost":
@@ -66,6 +67,16 @@ def save_attempt(ip, username, password):
     
     # Verificar si hay que mandar alerta de fuerza bruta
     check_y_alertar(ip, geo["country"], geo["city"], username, password)
+
+    # Registrar para ML
+    registrar_intento_ml(ip, username, password)
+    
+    # Clasificar el atacante en background
+    threading.Thread(
+        target=clasificar_atacante,
+        args=(ip,),
+        daemon=True
+    ).start()
     
     # Consultar threat intelligence en background
     threading.Thread(

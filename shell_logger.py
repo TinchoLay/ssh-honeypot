@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime
+from ml_classifier import registrar_shell_ml
 
 SHELL_LOG = "logs/shell_commands.json"
 
@@ -19,7 +20,8 @@ def save_command(ip, command, nota=""):
         json.dump(registro, f)
         f.write("\n")
     
-    # Si hay una nota de alerta, mostrarla en consola
+    registrar_shell_ml(ip, command)
+    
     if nota:
         print(f"\n  ⚠️  {nota} — IP: {ip}")
     else:
