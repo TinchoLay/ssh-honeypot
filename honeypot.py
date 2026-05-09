@@ -5,13 +5,10 @@ from logger import save_attempt
 from config import HOST, PORT, BANNER, MAX_CONNECTIONS
 from stats import show_stats
 from fake_shell import FakeShell, manejar_shell
-from config import HOST, PORT, BANNER, MAX_CONNECTIONS, HTTP_ENABLED, FTP_ENABLED
-from http_honeypot import start_http_honeypot
-from ftp_honeypot import start_ftp_honeypot
 
 host_key = paramiko.RSAKey.generate(2048)
 
-def handle_connection(client_socket, client_ip):
+def handle_connection(client_ip, client_socket):
     try:
         transport = paramiko.Transport(client_socket)
         transport.local_version = BANNER
@@ -20,7 +17,6 @@ def handle_connection(client_socket, client_ip):
         server = FakeShell(client_ip)
         transport.start_server(server=server)
 
-        # Capturar el banner DESPUÉS de la negociación
         try:
             from fingerprint import registrar_banner
             remote_version = transport.remote_version
@@ -55,6 +51,15 @@ def start_honeypot():
     print("   Escribí 'stats' y Enter para ver el resumen")
     print("   Escribí 'exit' y Enter para cerrar\n")
 
+    from config import HTTP_ENABLED, FTP_ENABLED
+    from http_honeypot import start_http_honeypot
+    from ftp_honeypot import start_ftp_honeypot
+
+    if HTTP_ENABLED:
+        threading.Thread(target=start_http_honeypot, daemon=True).start()
+    if FTP_ENABLED:
+        threading.Thread(target=start_ftp_honeypot, daemon=True).start()
+
     def escuchar_comandos():
         while True:
             try:
@@ -72,19 +77,13 @@ def start_honeypot():
     hilo_comandos = threading.Thread(target=escuchar_comandos, daemon=True)
     hilo_comandos.start()
 
-# Levantar servicios adicionales en hilos separados
-    if HTTP_ENABLED:
-        threading.Thread(target=start_http_honeypot, daemon=True).start()
-    if FTP_ENABLED:
-        threading.Thread(target=start_ftp_honeypot, daemon=True).start()
-
     try:
         while True:
             client_socket, client_address = server_socket.accept()
             client_ip = client_address[0]
             thread = threading.Thread(
                 target=handle_connection,
-                args=(client_socket, client_ip)
+                args=(client_ip, client_socket)
             )
             thread.daemon = True
             thread.start()

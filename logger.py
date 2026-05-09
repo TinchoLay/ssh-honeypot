@@ -6,8 +6,8 @@ from datetime import datetime
 from config import LOG_FILE, GEO_API_URL, GEO_ENABLED
 from alertas import check_y_alertar
 from threat_intel import analizar_ip
-from fingerprint import hacer_fingerprint
 from ml_classifier import registrar_intento_ml, clasificar_atacante
+from fingerprint import hacer_fingerprint
 
 def get_geolocation(ip):
     if ip.startswith("127.") or ip.startswith("192.168.") or ip == "localhost":
@@ -18,7 +18,7 @@ def get_geolocation(ip):
             "lat": None,
             "lon": None
         }
-    
+
     try:
         response = requests.get(f"{GEO_API_URL}{ip}", timeout=3)
         data = response.json()
@@ -32,7 +32,7 @@ def get_geolocation(ip):
             }
     except Exception:
         pass
-    
+
     return {
         "country": "Desconocido",
         "city": "Desconocido",
@@ -43,12 +43,12 @@ def get_geolocation(ip):
 
 def save_attempt(ip, username, password):
     os.makedirs("logs", exist_ok=True)
-    
+
     geo = get_geolocation(ip) if GEO_ENABLED else {
         "country": "-", "city": "-",
         "isp": "-", "lat": None, "lon": None
     }
-    
+
     attempt = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "ip": ip,
@@ -60,43 +60,41 @@ def save_attempt(ip, username, password):
         "username": username,
         "password": password
     }
-    
+
     with open(LOG_FILE, "a") as f:
         json.dump(attempt, f)
         f.write("\n")
-    
-    # Verificar si hay que mandar alerta de fuerza bruta
+
+    # Alerta de fuerza bruta
     check_y_alertar(ip, geo["country"], geo["city"], username, password)
 
-    # Registrar para ML
+    # Registrar para ML y clasificar
     registrar_intento_ml(ip, username, password)
-    
-    # Clasificar el atacante en background
     threading.Thread(
         target=clasificar_atacante,
         args=(ip,),
         daemon=True
     ).start()
-    
-    # Consultar threat intelligence en background
+
+    # Fingerprinting
+    threading.Thread(
+        target=hacer_fingerprint,
+        args=(ip, username, password),
+        daemon=True
+    ).start()
+
+    # Threat intelligence
     threading.Thread(
         target=analizar_ip,
         args=(ip,),
         daemon=True
     ).start()
 
-    # Fingerprinting del atacante
-    threading.Thread(
-        target=hacer_fingerprint,
-        args=(ip, username, password),
-        daemon=True
-    ).start()
-    
-    # Notificar al dashboard si está corriendo
+    # Notificar al dashboard
     try:
         from dashboard import notify_new_attempt
         notify_new_attempt(attempt)
     except Exception:
         pass
-    
+
     print(f"[{attempt['timestamp']}] {ip} ({geo['country']} - {geo['city']}) → {username}:{password}")
