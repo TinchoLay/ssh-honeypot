@@ -71,6 +71,63 @@ def notify_new_attempt(attempt):
     stats = get_stats(attempts)
     socketio.emit("update", stats)
 
+@app.route("/analisis")
+def analisis():
+    """Página de análisis temporal."""
+    attempts = load_attempts()
+    
+    if not attempts:
+        return render_template("analisis.html", datos={})
+    
+    # Agrupar por hora
+    por_hora = [0] * 24
+    for a in attempts:
+        try:
+            hora = int(a["timestamp"].split(" ")[1].split(":")[0])
+            por_hora[hora] += 1
+        except Exception:
+            pass
+    
+    # Agrupar por día de la semana
+    from datetime import datetime
+    dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    por_dia = [0] * 7
+    for a in attempts:
+        try:
+            dt = datetime.strptime(a["timestamp"], "%Y-%m-%d %H:%M:%S")
+            por_dia[dt.weekday()] += 1
+        except Exception:
+            pass
+    
+    # Top 10 países
+    from collections import Counter
+    paises = Counter(
+        a.get("country", "?") for a in attempts 
+        if a.get("country") not in ["Local", "Desconocido", None]
+    )
+    top_paises = dict(paises.most_common(10))
+    
+    # Timeline — ataques por fecha
+    fechas = Counter(a["timestamp"].split(" ")[0] for a in attempts)
+    fechas_ordenadas = dict(sorted(fechas.items()))
+    
+    datos = {
+        "por_hora": por_hora,
+        "por_dia": por_dia,
+        "dias_labels": dias,
+        "top_paises": top_paises,
+        "timeline": fechas_ordenadas,
+        "total": len(attempts)
+    }
+    
+    return render_template("analisis.html", datos=datos)
+
+@socketio.on("get_analisis")
+def on_get_analisis():
+    """Envía datos de análisis al cliente vía WebSocket."""
+    attempts = load_attempts()
+    socketio.emit("analisis_update", {"total": len(attempts)})
+    
 if __name__ == "__main__":
     print("🖥️  Dashboard activo en http://localhost:5000")
     print("   Abrí esa URL en tu navegador")

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>SSH Honeypot — Análisis</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0d1117; color: #e6edf3; font-family: monospace; padding: 20px; }
+        h1 { color: #58a6ff; text-align: center; margin-bottom: 6px; font-size: 22px; }
+        .nav { text-align: center; margin-bottom: 24px; }
+        .nav a { color: #8b949e; text-decoration: none; margin: 0 12px; font-size: 13px; }
+        .nav a:hover { color: #58a6ff; }
+        .nav a.active { color: #58a6ff; border-bottom: 2px solid #58a6ff; padding-bottom: 2px; }
+        .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+        .box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+        .box h3 { color: #f0883e; font-size: 13px; margin-bottom: 16px; }
+        .stat { text-align: center; font-size: 36px; font-weight: bold; color: #58a6ff; margin: 20px 0; }
+        .stat small { display: block; font-size: 12px; color: #8b949e; margin-top: 4px; }
+        .empty { text-align: center; margin-top: 60px; color: #8b949e; }
+        canvas { max-height: 280px; }
+    </style>
+</head>
+<body>
+    <h1>🍯 SSH Honeypot Dashboard</h1>
+    <div class="nav">
+        <a href="/">📊 Stats</a>
+        <a href="/analisis" class="active">📈 Análisis</a>
+    </div>
+
+    {% if datos %}
+    <div class="grid">
+
+        <div class="box">
+            <h3>📋 Resumen</h3>
+            <div class="stat">
+                {{ datos.total }}
+                <small>ataques registrados</small>
+            </div>
+        </div>
+
+        <div class="box">
+            <h3>⏰ Hora pico</h3>
+            <div class="stat">
+                {{ datos.por_hora.index(datos.por_hora | max) }}:00 hs
+                <small>{{ datos.por_hora | max }} ataques en esa hora</small>
+            </div>
+        </div>
+
+        <div class="box">
+            <h3>⏰ Ataques por hora del día</h3>
+            <canvas id="chartHora"></canvas>
+        </div>
+
+        <div class="box">
+            <h3>📅 Ataques por día de la semana</h3>
+            <canvas id="chartDia"></canvas>
+        </div>
+
+        <div class="box">
+            <h3>🌍 Top países atacantes</h3>
+            <canvas id="chartPaises"></canvas>
+        </div>
+
+        <div class="box">
+            <h3>📈 Evolución temporal</h3>
+            <canvas id="chartTimeline"></canvas>
+        </div>
+
+    </div>
+
+    <script>
+        const opcionesBase = {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { ticks: { color: "#8b949e" }, grid: { color: "#21262d" } },
+                y: { ticks: { color: "#8b949e" }, grid: { color: "#21262d" }, beginAtZero: true }
+            }
+        }
+
+        const datosHora = {{ datos.por_hora | tojson }};
+        new Chart(document.getElementById("chartHora"), {
+            type: "bar",
+            data: {
+                labels: Array.from({length: 24}, (_, i) => i + ":00"),
+                datasets: [{
+                    data: datosHora,
+                    backgroundColor: Array.from({length: 24}, (_, h) =>
+                        h < 6 ? "#FF4444" : h < 12 ? "#FF8C00" : h < 18 ? "#4CAF50" : "#2196F3"
+                    ),
+                    borderRadius: 4
+                }]
+            },
+            options: opcionesBase
+        });
+
+        const datosDia = {{ datos.por_dia | tojson }};
+        new Chart(document.getElementById("chartDia"), {
+            type: "bar",
+            data: {
+                labels: {{ datos.dias_labels | tojson }},
+                datasets: [{
+                    data: datosDia,
+                    backgroundColor: ["#2196F3","#2196F3","#2196F3","#2196F3","#2196F3","#FF4444","#FF4444"],
+                    borderRadius: 4
+                }]
+            },
+            options: opcionesBase
+        });
+
+        const paisesDatos = {{ datos.top_paises | tojson }};
+        new Chart(document.getElementById("chartPaises"), {
+            type: "bar",
+            data: {
+                labels: Object.keys(paisesDatos),
+                datasets: [{
+                    data: Object.values(paisesDatos),
+                    backgroundColor: "#E91E63",
+                    borderRadius: 4
+                }]
+            },
+            options: { ...opcionesBase, indexAxis: "y" }
+        });
+
+        const timelineDatos = {{ datos.timeline | tojson }};
+        new Chart(document.getElementById("chartTimeline"), {
+            type: "line",
+            data: {
+                labels: Object.keys(timelineDatos),
+                datasets: [{
+                    data: Object.values(timelineDatos),
+                    borderColor: "#00BCD4",
+                    backgroundColor: "rgba(0,188,212,0.1)",
+                    fill: true,
+                    tension: 0.4,
+                    pointBackgroundColor: "#FF4444",
+                    pointRadius: 5
+                }]
+            },
+            options: opcionesBase
+        });
+    </script>
+
+    {% else %}
+    <div class="empty">
+        <p style="font-size: 48px;">📭</p>
+        <p>No hay datos para analizar todavía.</p>
+        <p style="margin-top: 8px; font-size: 13px;">Corré el honeypot y esperá algunos ataques.</p>
+    </div>
+    {% endif %}
+
+</body>
+</html>
