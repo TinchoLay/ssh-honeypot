@@ -101,13 +101,30 @@ def get_response(comando, ip):
     if not cmd:
         return ""
     
-    # Detectar comandos de descarga (muy valioso para threat intel)
+    # Detectar comandos de descarga
     if any(x in cmd for x in ["wget", "curl", "fetch"]):
-        # Extraer la URL si existe
         partes = cmd.split()
-        url = next((p for p in partes if p.startswith("http")), "URL desconocida")
-        save_command(ip, cmd, f"ALERTA: Intento de descarga de {url}")
-        return f"--2026-04-27 03:14:22-- {url}\nResolving... connected.\nHTTP request sent, awaiting response... 200 OK\nSaving to: 'payload.sh'\npayload.sh 100%[==================>]   4.21K  --.-KB/s    in 0s"
+        url = next((p for p in partes if p.startswith("http")), None)
+        
+        if url:
+            save_command(ip, cmd, f"ALERTA: Intento de descarga de {url}")
+            # Capturar el malware en background
+            from malware_capture import capturar_en_background
+            capturar_en_background(url, ip)
+            
+            nombre = url.rstrip("/").split("/")[-1] or "payload"
+            return (
+                f"--2026-05-08 03:14:22-- {url}\n"
+                f"Resolving {url.split('/')[2]}... connected.\n"
+                f"HTTP request sent, awaiting response... 200 OK\n"
+                f"Length: 4312 (4.2K) [text/plain]\n"
+                f"Saving to: '{nombre}'\n\n"
+                f"{nombre} 100%[==================>]   4.21K  --.-KB/s    in 0s\n\n"
+                f"2026-05-08 03:14:22 (--.- MB/s) - '{nombre}' saved [4312/4312]"
+            )
+        else:
+            save_command(ip, cmd, "ALERTA: Intento de descarga sin URL")
+            return "wget: missing URL"
     
     # Detectar comandos de modificación del sistema
     if any(x in cmd for x in ["chmod", "chown", "useradd", "userdel", "passwd", "crontab -e"]):

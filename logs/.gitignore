@@ -9,3 +9,5 @@ logs/http_attempts.json
 logs/ftp_attempts.json
 logs/ml_classifications.json
 logs/modelo_ml.pkl
+logs/malware_captures.json
+logs/malware_samples/
