@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🗺️ Mapa de Ataques — Honeypot</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css"/>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0a0a1a; font-family: 'Courier New', monospace; color: #e0e0e0; }
+
+        .header {
+            background: #0d1117;
+            border-bottom: 1px solid #1e3a5f;
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .header h1 { font-size: 1.1rem; color: #58a6ff; }
+        .header a {
+            color: #8b949e;
+            text-decoration: none;
+            font-size: 0.85rem;
+            padding: 4px 10px;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+        }
+        .header a:hover { color: #58a6ff; border-color: #58a6ff; }
+
+        #map {
+            width: 100%;
+            height: calc(100vh - 52px);
+        }
+
+        .legend {
+            background: rgba(13,17,23,0.9);
+            border: 1px solid #1e3a5f;
+            border-radius: 6px;
+            padding: 10px 14px;
+            font-size: 0.78rem;
+            color: #8b949e;
+            line-height: 1.8;
+        }
+        .legend b { color: #e0e0e0; }
+        .dot {
+            display: inline-block;
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+
+        .stats-overlay {
+            position: absolute;
+            top: 64px;
+            left: 12px;
+            z-index: 1000;
+            background: rgba(13,17,23,0.92);
+            border: 1px solid #1e3a5f;
+            border-radius: 8px;
+            padding: 14px 18px;
+            font-size: 0.82rem;
+            min-width: 160px;
+        }
+        .stats-overlay .stat { margin-bottom: 8px; }
+        .stats-overlay .num { font-size: 1.4rem; color: #ff4444; font-weight: bold; }
+        .stats-overlay .lbl { color: #8b949e; font-size: 0.75rem; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>🗺️ Mapa de Ataques en Tiempo Real</h1>
+    <a href="/">← Dashboard</a>
+    <a href="/analisis">📊 Análisis</a>
+    <a href="#" onclick="location.reload()">🔄 Actualizar</a>
+</div>
+
+<div id="map"></div>
+
+<script>
+    const MAP_POINTS = {{ map_points|safe }};
+
+    // Mapa oscuro
+    const map = L.map('map', {
+        center: [20, 0],
+        zoom: 2,
+        zoomControl: true
+    });
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+        attribution: 'CartoDB',
+        subdomains: 'abcd',
+        maxZoom: 18
+    }).addTo(map);
+
+    // Dibujar puntos
+    let totalAtaques = 0;
+    let totalIPs = 0;
+
+    MAP_POINTS.forEach(p => {
+        const radio = Math.min(6 + (p.count * 2.5), 45);
+        const opacity = Math.min(0.4 + (p.count / 20), 0.85);
+
+        totalAtaques += p.count;
+        totalIPs += p.ips;
+
+        const circle = L.circleMarker([p.lat, p.lon], {
+            radius: radio,
+            color: '#FF2222',
+            weight: 1.5,
+            fill: true,
+            fillColor: '#FF0000',
+            fillOpacity: opacity
+        }).addTo(map);
+
+        circle.bindTooltip(`
+            <div style="font-family:monospace; font-size:13px; line-height:1.6">
+                🌍 <b>${p.country}</b> — ${p.city}<br>
+                💥 Ataques: <b>${p.count}</b><br>
+                🖥️ IPs únicas: <b>${p.ips}</b>
+            </div>
+        `, { sticky: true });
+
+        circle.bindPopup(`
+            <div style="font-family:monospace; font-size:13px">
+                <b>${p.country} — ${p.city}</b><br>
+                Ataques registrados: <b>${p.count}</b><br>
+                IPs distintas: <b>${p.ips}</b><br>
+                Coordenadas: ${p.lat.toFixed(2)}, ${p.lon.toFixed(2)}
+            </div>
+        `);
+    });
+
+    // Stats overlay
+    const statsDiv = document.createElement('div');
+    statsDiv.className = 'stats-overlay';
+    statsDiv.innerHTML = `
+        <div class="stat">
+            <div class="num">${totalAtaques}</div>
+            <div class="lbl">ataques en mapa</div>
+        </div>
+        <div class="stat">
+            <div class="num">${MAP_POINTS.length}</div>
+            <div class="lbl">países / regiones</div>
+        </div>
+    `;
+    document.body.appendChild(statsDiv);
+
+    // Leyenda
+    const legend = L.control({ position: 'bottomright' });
+    legend.onAdd = () => {
+        const div = L.DomUtil.create('div', 'legend');
+        div.innerHTML = `
+            <b>Radio = intensidad</b><br>
+            <span class="dot" style="background:#FF0000;opacity:0.4"></span> 1–5 ataques<br>
+            <span class="dot" style="background:#FF0000;opacity:0.65"></span> 6–20 ataques<br>
+            <span class="dot" style="background:#FF0000;opacity:0.85"></span> 20+ ataques<br>
+            <br><span style="font-size:0.72rem">Click en círculo para detalles</span>
+        `;
+        return div;
+    };
+    legend.addTo(map);
+
+    // Auto-refresh cada 30 segundos
+    setTimeout(() => location.reload(), 30000);
+</script>
+
+</body>
+</html>

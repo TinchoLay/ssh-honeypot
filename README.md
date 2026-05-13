@@ -15,20 +15,22 @@ Un honeypot multi-servicio hecho en Python que captura, analiza y clasifica inte
 - **HTTP Honeypot** con panel de administración falso (router TP-Link)
 - **FTP Honeypot** que captura credenciales FTP
 - **Geolocalización** automática de IPs atacantes
-- **Dashboard web** en tiempo real con WebSockets
-- **Mapa de calor** mundial de ataques interactivo
+- **Dashboard web** en tiempo real con WebSockets — incluye ataques SSH, HTTP y FTP unificados
+- **Mapa de calor** mundial interactivo embebido en el dashboard (`/mapa`)
 - **Threat Intelligence** cruzando IPs con AbuseIPDB y Shodan
 - **Fingerprinting** de herramientas atacantes (Hydra, Metasploit, etc.)
 - **Machine Learning** que clasifica atacantes automáticamente
 - **Captura de malware** con análisis automático via VirusTotal
 - **Alertas por email** ante ataques de fuerza bruta
-- **Análisis temporal** con gráficos interactivos
+- **Análisis temporal** con gráficos interactivos por tipo de servicio
 
 ---
 
 ## 🏗️ Arquitectura
+
+```
 ssh-honeypot/
-├── honeypot.py          # Servidor SSH principal
+├── honeypot.py          # Servidor SSH principal + arranca todos los servicios
 ├── fake_shell.py        # Shell interactiva falsa
 ├── shell_logger.py      # Logger de comandos de shell
 ├── http_honeypot.py     # Servidor HTTP falso
@@ -39,14 +41,16 @@ ssh-honeypot/
 ├── threat_intel.py      # Integración AbuseIPDB + Shodan
 ├── ml_classifier.py     # Clasificador ML con RandomForest
 ├── malware_capture.py   # Captura y análisis de malware
-├── dashboard.py         # Dashboard web Flask + WebSockets
+├── dashboard.py         # Dashboard web Flask + WebSockets (SSH+HTTP+FTP)
 ├── stats.py             # Estadísticas en consola
-├── mapa.py              # Generador de mapa de calor
+├── mapa.py              # Generador de mapa de calor (archivo externo)
 ├── config.py            # Configuración centralizada
 ├── templates/
 │   ├── index.html       # Dashboard principal
-│   └── analisis.html    # Análisis temporal
+│   ├── analisis.html    # Análisis temporal
+│   └── mapa.html        # Mapa de calor embebido
 └── logs/                # Datos capturados
+```
 
 ---
 
@@ -88,26 +92,37 @@ VIRUSTOTAL_KEY = "tu_api_key"
 
 ## ▶️ Uso
 
-**Correr el honeypot:**
+**Correr todo con un solo comando** (SSH + HTTP + FTP + Dashboard):
 ```bash
 python honeypot.py
 ```
 
-**Dashboard web en tiempo real:**
+El dashboard arranca automáticamente en el puerto 5000. Ya no hace falta correrlo por separado.
+
+**Ver estadísticas en consola:**
 ```bash
-python dashboard.py
-# Abrí http://localhost:5000
+# Mientras corre el honeypot, escribí:
+stats
 ```
 
-**Ver estadísticas:**
-```bash
-python stats.py
-```
-
-**Generar mapa de calor:**
+**Generar mapa de calor como archivo HTML independiente:**
 ```bash
 python mapa.py
 ```
+
+---
+
+## 🖥️ Dashboard
+
+El dashboard web unifica eventos de los tres servicios en tiempo real.
+
+| Ruta | Descripción |
+|------|-------------|
+| `/` | Panel principal con stats de SSH + HTTP + FTP |
+| `/analisis` | Análisis temporal por hora, día y país |
+| `/mapa` | Mapa de calor mundial interactivo (auto-refresh 30s) |
+| `/api/stats` | JSON con estadísticas actuales |
+| `/api/analisis` | JSON con datos de análisis temporal |
 
 ---
 
@@ -118,7 +133,7 @@ python mapa.py
 docker build -t ssh-honeypot .
 
 # Correr
-docker run -p 2222:2222 -p 8080:8080 -p 2121:2121 ssh-honeypot
+docker run -p 2222:2222 -p 8080:8080 -p 2121:2121 -p 5000:5000 ssh-honeypot
 
 # O con Docker Compose
 docker-compose up
@@ -127,7 +142,7 @@ docker-compose up
 **Imagen pública:**
 ```bash
 docker pull martinlay/ssh-honeypot
-docker run -p 2222:2222 martinlay/ssh-honeypot
+docker run -p 2222:2222 -p 5000:5000 martinlay/ssh-honeypot
 ```
 
 ---
@@ -165,9 +180,41 @@ El modelo se re-entrena automáticamente cada 100 ataques reales.
 | Backend | Python 3.11, Flask, paramiko |
 | ML | scikit-learn, RandomForest, numpy |
 | Frontend | Chart.js, WebSockets, HTML/CSS |
-| Mapas | folium, Leaflet.js |
+| Mapas | Leaflet.js (embebido en dashboard) |
 | Threat Intel | AbuseIPDB API, Shodan API, VirusTotal API |
 | DevOps | Docker, Docker Compose |
+
+---
+
+## ☁️ Deploy en Azure
+
+Para correr en una VM de Azure:
+
+1. Crear VM (Standard B2ats v2 recomendado)
+2. Abrir los siguientes puertos en el NSG (Network Security Group):
+
+| Priority | Nombre | Puerto |
+|----------|--------|--------|
+| 100 | Allow-SSH-Honeypot | 2222 |
+| 110 | Allow-HTTP-Honeypot | 8080 |
+| 120 | Allow-FTP-Honeypot | 2121 |
+| 130 | Allow-Dashboard | 5000 |
+
+3. Instalar dependencias y correr con `screen` para que sobreviva desconexiones:
+
+```bash
+screen -S honeypot
+source venv/bin/activate
+python3 honeypot.py
+# Ctrl+A, D para desconectarse sin matar el proceso
+```
+
+4. Para volver a conectarse a la sesión:
+```bash
+screen -r honeypot
+```
+
+> ⚠️ Apagá la VM cuando no la uses para no consumir créditos innecesariamente.
 
 ---
 

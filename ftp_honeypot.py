@@ -31,6 +31,13 @@ def save_ftp_attempt(ip, username, password):
     
     print(f"[FTP]  [{attempt['timestamp']}] {ip} → {username}:{password}")
 
+    # Notificar al dashboard
+    try:
+        from dashboard import notify_new_attempt
+        notify_new_attempt(attempt)
+    except Exception:
+        pass
+
 def manejar_ftp(client_socket, client_ip):
     """
     Maneja una sesión FTP completa.

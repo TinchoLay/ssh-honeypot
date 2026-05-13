@@ -41,6 +41,15 @@ def handle_connection(client_ip, client_socket):
     finally:
         client_socket.close()
 
+def start_dashboard():
+    """Arranca el dashboard Flask en un hilo separado."""
+    try:
+        from dashboard import socketio, app
+        print("🖥️  Dashboard activo en http://0.0.0.0:5000")
+        socketio.run(app, debug=False, host="0.0.0.0", port=5000, use_reloader=False)
+    except Exception as e:
+        print(f"⚠️  Dashboard no pudo iniciar: {e}")
+
 def start_honeypot():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -59,6 +68,9 @@ def start_honeypot():
         threading.Thread(target=start_http_honeypot, daemon=True).start()
     if FTP_ENABLED:
         threading.Thread(target=start_ftp_honeypot, daemon=True).start()
+
+    # Arrancar dashboard automáticamente
+    threading.Thread(target=start_dashboard, daemon=True).start()
 
     def escuchar_comandos():
         while True:

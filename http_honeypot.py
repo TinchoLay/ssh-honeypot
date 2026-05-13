@@ -96,6 +96,13 @@ def save_http_attempt(ip, method, path, username=None, password=None, user_agent
     else:
         print(f"[HTTP] [{attempt['timestamp']}] {ip} → {method} {path}")
 
+    # Notificar al dashboard
+    try:
+        from dashboard import notify_new_attempt
+        notify_new_attempt(attempt)
+    except Exception:
+        pass
+
 def parsear_request(raw):
     """Parsea un request HTTP crudo y extrae los datos importantes."""
     try:
