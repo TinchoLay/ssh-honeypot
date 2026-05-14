@@ -3,23 +3,87 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SSH Honeypot Dashboard</title>
+    <title>🍯 SSH Honeypot Dashboard</title>
+
+    <!-- Librerías -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css"/>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { background: #0d1117; color: #e6edf3; font-family: monospace; padding: 20px; }
-        h1 { color: #58a6ff; text-align: center; margin-bottom: 8px; font-size: 22px; }
-        .subtitle { text-align: center; color: #8b949e; margin-bottom: 24px; font-size: 13px; }
-        .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 24px; }
-        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
-        .card h2 { color: #8b949e; font-size: 12px; text-transform: uppercase; margin-bottom: 8px; }
-        .card .number { font-size: 36px; font-weight: bold; color: #58a6ff; }
-        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+        body { background: #0d1117; color: #e6edf3; font-family: monospace; }
+
+        /* ── HEADER ── */
+        .header {
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            padding: 16px 24px;
+            text-align: center;
+        }
+        .header h1 { color: #58a6ff; font-size: 22px; margin-bottom: 4px; }
+        .header p { color: #8b949e; font-size: 13px; }
+
+        /* ── TABS ── */
+        .tabs {
+            display: flex;
+            justify-content: center;
+            gap: 4px;
+            padding: 12px 24px;
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .tab {
+            padding: 8px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-family: monospace;
+            color: #8b949e;
+            border: 1px solid transparent;
+            transition: all 0.2s;
+        }
+        .tab:hover { color: #e6edf3; border-color: #30363d; }
+        .tab.active { color: #58a6ff; border-color: #58a6ff; background: rgba(88,166,255,0.08); }
+
+        /* ── ESTADO ── */
+        .status {
+            text-align: center;
+            padding: 8px;
+            font-size: 12px;
+            color: #8b949e;
+            background: #0d1117;
+        }
+        .dot { display: inline-block; width: 7px; height: 7px; background: #3fb950; border-radius: 50%; margin-right: 5px; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+        /* ── SECCIONES ── */
+        .section { display: none; padding: 20px 24px; }
+        .section.active { display: block; }
+
+        /* ── CARDS ── */
+        .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+        .card h2 { color: #8b949e; font-size: 11px; text-transform: uppercase; margin-bottom: 6px; }
+        .card .number { font-size: 32px; font-weight: bold; color: #58a6ff; }
+        .card .sub { font-size: 11px; color: #8b949e; margin-top: 2px; }
+        .card.ssh .number { color: #58a6ff; }
+        .card.http .number { color: #f0883e; }
+        .card.ftp .number { color: #3fb950; }
+
+        /* ── GRID TOPS ── */
+        .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
         .box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
         .box h3 { color: #f0883e; font-size: 13px; margin-bottom: 12px; border-bottom: 1px solid #30363d; padding-bottom: 8px; }
-        .item { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #21262d; font-size: 13px; }
+        .item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #21262d; font-size: 13px; }
         .item:last-child { border-bottom: none; }
         .item .val { color: #3fb950; font-weight: bold; }
+
+        /* ── LOG RECIENTE ── */
         .recent { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
         .recent h3 { color: #f0883e; font-size: 13px; margin-bottom: 12px; border-bottom: 1px solid #30363d; padding-bottom: 8px; }
         .log { font-size: 12px; padding: 6px 0; border-bottom: 1px solid #21262d; color: #8b949e; }
@@ -27,20 +91,69 @@
         .log .ip { color: #ff7b72; }
         .log .country { color: #58a6ff; }
         .log .creds { color: #3fb950; }
-        .dot { display: inline-block; width: 8px; height: 8px; background: #3fb950; border-radius: 50%; margin-right: 6px; animation: pulse 1.5s infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-        .status { text-align: center; margin-bottom: 20px; font-size: 13px; color: #8b949e; }
+        .log .tipo { font-size: 10px; padding: 1px 5px; border-radius: 3px; margin-right: 4px; }
+        .log .tipo.SSH { background: rgba(88,166,255,0.15); color: #58a6ff; }
+        .log .tipo.HTTP { background: rgba(240,136,62,0.15); color: #f0883e; }
+        .log .tipo.FTP { background: rgba(63,185,80,0.15); color: #3fb950; }
+
+        /* ── ANÁLISIS ── */
+        .grid2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+        .stat-big { text-align: center; font-size: 40px; font-weight: bold; color: #58a6ff; padding: 20px 0; }
+        .stat-big small { display: block; font-size: 12px; color: #8b949e; margin-top: 4px; }
+        canvas { max-height: 260px; }
+
+        /* ── MAPA ── */
+        #map-container { position: relative; }
+        #map { width: 100%; height: calc(100vh - 200px); min-height: 400px; border-radius: 8px; border: 1px solid #30363d; }
+        .map-stats {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            z-index: 1000;
+            background: rgba(13,17,23,0.92);
+            border: 1px solid #1e3a5f;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 12px;
+        }
+        .map-stats .num { font-size: 1.3rem; color: #ff4444; font-weight: bold; }
+        .map-stats .lbl { color: #8b949e; font-size: 11px; }
+        .legend {
+            background: rgba(13,17,23,0.9);
+            border: 1px solid #1e3a5f;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 11px;
+            color: #8b949e;
+            line-height: 1.8;
+        }
+        .legend b { color: #e0e0e0; }
+        .ldot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+
+        /* ── EMPTY ── */
+        .empty { text-align: center; padding: 60px 20px; color: #8b949e; }
+        .empty p { margin-top: 8px; font-size: 13px; }
     </style>
 </head>
 <body>
+
+<!-- HEADER -->
+<div class="header">
     <h1>🍯 SSH Honeypot Dashboard</h1>
-<p class="subtitle">Monitoreo de intentos de acceso no autorizados en tiempo real</p>
-<div style="text-align:center; margin-bottom: 16px;">
-    <a href="/analisis" style="color:#8b949e; text-decoration:none; font-size:13px; font-family:monospace;">
-        📈 Ver análisis temporal →
-    </a>
+    <p>Monitoreo de intentos de acceso no autorizados en tiempo real</p>
 </div>
+
+<!-- TABS -->
+<div class="tabs">
+    <div class="tab active" onclick="switchTab('stats')">📊 Stats</div>
+    <div class="tab" onclick="switchTab('analisis')">📈 Análisis</div>
+    <div class="tab" onclick="switchTab('mapa')">🗺️ Mapa</div>
+</div>
+
 <div class="status"><span class="dot"></span>Conectado y monitoreando</div>
+
+<!-- ══════════════ TAB: STATS ══════════════ -->
+<div id="tab-stats" class="section active">
 
     <div class="cards">
         <div class="card">
@@ -51,17 +164,24 @@
             <h2>IPs únicas</h2>
             <div class="number" id="unique_ips">{{ stats.unique_ips }}</div>
         </div>
+        <div class="card ssh">
+            <h2>SSH</h2>
+            <div class="number" id="ssh_count">{{ stats.ssh_count }}</div>
+            <div class="sub">intentos</div>
+        </div>
+        <div class="card http">
+            <h2>HTTP</h2>
+            <div class="number" id="http_count">{{ stats.http_count }}</div>
+            <div class="sub">intentos</div>
+        </div>
     </div>
 
-    <div class="grid">
+    <div class="grid3">
         <div class="box">
             <h3>👤 Top usuarios</h3>
             <div id="top_users">
                 {% for item in stats.top_users %}
-                <div class="item">
-                    <span>{{ item.name }}</span>
-                    <span class="val">{{ item.count }}x</span>
-                </div>
+                <div class="item"><span>{{ item.name }}</span><span class="val">{{ item.count }}x</span></div>
                 {% endfor %}
             </div>
         </div>
@@ -69,10 +189,7 @@
             <h3>🔑 Top contraseñas</h3>
             <div id="top_passwords">
                 {% for item in stats.top_passwords %}
-                <div class="item">
-                    <span>{{ item.name }}</span>
-                    <span class="val">{{ item.count }}x</span>
-                </div>
+                <div class="item"><span>{{ item.name }}</span><span class="val">{{ item.count }}x</span></div>
                 {% endfor %}
             </div>
         </div>
@@ -80,10 +197,7 @@
             <h3>🌍 Top países</h3>
             <div id="top_countries">
                 {% for item in stats.top_countries %}
-                <div class="item">
-                    <span>{{ item.name }}</span>
-                    <span class="val">{{ item.count }}x</span>
-                </div>
+                <div class="item"><span>{{ item.name }}</span><span class="val">{{ item.count }}x</span></div>
                 {% endfor %}
             </div>
         </div>
@@ -94,6 +208,7 @@
         <div id="recent_attacks">
             {% for a in stats.recent %}
             <div class="log">
+                <span class="tipo {{ a.get('tipo', 'SSH') }}">{{ a.get('tipo', 'SSH') }}</span>
                 <span>{{ a.timestamp }}</span> —
                 <span class="ip">{{ a.ip }}</span>
                 (<span class="country">{{ a.country }}</span>) →
@@ -102,44 +217,277 @@
             {% endfor %}
         </div>
     </div>
+</div>
 
-    <script>
-        const socket = io();
+<!-- ══════════════ TAB: ANÁLISIS ══════════════ -->
+<div id="tab-analisis" class="section">
+    <div class="grid2" id="analisis-content">
+        <div class="box">
+            <h3>📋 Resumen</h3>
+            <div class="stat-big" id="anal-total">—<small>ataques registrados</small></div>
+        </div>
+        <div class="box">
+            <h3>⏰ Hora pico</h3>
+            <div class="stat-big" id="anal-hora-pico">—<small>hora con más ataques</small></div>
+        </div>
+        <div class="box">
+            <h3>⏰ Ataques por hora del día</h3>
+            <canvas id="chartHora"></canvas>
+        </div>
+        <div class="box">
+            <h3>📅 Ataques por día de la semana</h3>
+            <canvas id="chartDia"></canvas>
+        </div>
+        <div class="box">
+            <h3>🌍 Top países atacantes</h3>
+            <canvas id="chartPaises"></canvas>
+        </div>
+        <div class="box">
+            <h3>📈 Evolución temporal</h3>
+            <canvas id="chartTimeline"></canvas>
+        </div>
+    </div>
+</div>
 
-        socket.on("update", function(stats) {
-            // Actualizar números
-            document.getElementById("total").textContent = stats.total;
-            document.getElementById("unique_ips").textContent = stats.unique_ips;
+<!-- ══════════════ TAB: MAPA ══════════════ -->
+<div id="tab-mapa" class="section">
+    <div id="map-container">
+        <div id="map"></div>
+    </div>
+</div>
 
-            // Actualizar top usuarios
-            document.getElementById("top_users").innerHTML =
-                stats.top_users.map(i =>
-                    `<div class="item"><span>${i.name}</span><span class="val">${i.count}x</span></div>`
-                ).join("");
 
-            // Actualizar top contraseñas
-            document.getElementById("top_passwords").innerHTML =
-                stats.top_passwords.map(i =>
-                    `<div class="item"><span>${i.name}</span><span class="val">${i.count}x</span></div>`
-                ).join("");
+<script>
+// ── TAB SWITCHING ──────────────────────────────────────────────
+let analisisLoaded = false;
+let mapaLoaded = false;
+let mapaInstance = null;
+let chartInstances = {};
 
-            // Actualizar top países
-            document.getElementById("top_countries").innerHTML =
-                stats.top_countries.map(i =>
-                    `<div class="item"><span>${i.name}</span><span class="val">${i.count}x</span></div>`
-                ).join("");
+function switchTab(name) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
 
-            // Actualizar últimos ataques
-            document.getElementById("recent_attacks").innerHTML =
-                stats.recent.map(a =>
-                    `<div class="log">
-                        <span>${a.timestamp}</span> —
-                        <span class="ip">${a.ip}</span>
-                        (<span class="country">${a.country}</span>) →
-                        <span class="creds">${a.username}:${a.password}</span>
-                    </div>`
-                ).join("");
+    event.target.classList.add('active');
+    document.getElementById('tab-' + name).classList.add('active');
+
+    if (name === 'analisis' && !analisisLoaded) {
+        cargarAnalisis();
+    }
+    if (name === 'mapa' && !mapaLoaded) {
+        cargarMapa();
+    }
+}
+
+// ── WEBSOCKET: STATS EN TIEMPO REAL ───────────────────────────
+const socket = io();
+
+socket.on("update", function(stats) {
+    document.getElementById("total").textContent = stats.total;
+    document.getElementById("unique_ips").textContent = stats.unique_ips;
+    document.getElementById("ssh_count").textContent = stats.ssh_count || 0;
+    document.getElementById("http_count").textContent = stats.http_count || 0;
+
+    document.getElementById("top_users").innerHTML =
+        stats.top_users.map(i =>
+            `<div class="item"><span>${i.name}</span><span class="val">${i.count}x</span></div>`
+        ).join("");
+
+    document.getElementById("top_passwords").innerHTML =
+        stats.top_passwords.map(i =>
+            `<div class="item"><span>${i.name}</span><span class="val">${i.count}x</span></div>`
+        ).join("");
+
+    document.getElementById("top_countries").innerHTML =
+        stats.top_countries.map(i =>
+            `<div class="item"><span>${i.name}</span><span class="val">${i.count}x</span></div>`
+        ).join("");
+
+    document.getElementById("recent_attacks").innerHTML =
+        stats.recent.map(a => {
+            const tipo = a.tipo || 'SSH';
+            return `<div class="log">
+                <span class="tipo ${tipo}">${tipo}</span>
+                <span>${a.timestamp}</span> —
+                <span class="ip">${a.ip}</span>
+                (<span class="country">${a.country || '-'}</span>) →
+                <span class="creds">${a.username || '-'}:${a.password || '-'}</span>
+            </div>`;
+        }).join("");
+});
+
+// ── ANÁLISIS: carga lazy cuando abrís el tab ──────────────────
+const opcionesBase = {
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: {
+        x: { ticks: { color: "#8b949e" }, grid: { color: "#21262d" } },
+        y: { ticks: { color: "#8b949e" }, grid: { color: "#21262d" }, beginAtZero: true }
+    }
+};
+
+function cargarAnalisis() {
+    fetch('/api/analisis')
+        .then(r => r.json())
+        .then(d => {
+            if (!d || !d.por_hora) return;
+
+            // Resumen
+            document.getElementById('anal-total').innerHTML =
+                `${d.total}<small>ataques registrados</small>`;
+
+            const horaPico = d.por_hora.indexOf(Math.max(...d.por_hora));
+            document.getElementById('anal-hora-pico').innerHTML =
+                `${horaPico}:00 hs<small>${d.por_hora[horaPico]} ataques en esa hora</small>`;
+
+            // Destruir charts anteriores si existen
+            Object.values(chartInstances).forEach(c => c.destroy());
+            chartInstances = {};
+
+            // Gráfico por hora
+            chartInstances.hora = new Chart(document.getElementById("chartHora"), {
+                type: "bar",
+                data: {
+                    labels: Array.from({length: 24}, (_, i) => i + ":00"),
+                    datasets: [{
+                        data: d.por_hora,
+                        backgroundColor: Array.from({length: 24}, (_, h) =>
+                            h < 6 ? "#FF4444" : h < 12 ? "#FF8C00" : h < 18 ? "#4CAF50" : "#2196F3"
+                        ),
+                        borderRadius: 4
+                    }]
+                },
+                options: opcionesBase
+            });
+
+            // Gráfico por día
+            chartInstances.dia = new Chart(document.getElementById("chartDia"), {
+                type: "bar",
+                data: {
+                    labels: d.dias_labels,
+                    datasets: [{
+                        data: d.por_dia,
+                        backgroundColor: ["#2196F3","#2196F3","#2196F3","#2196F3","#2196F3","#FF4444","#FF4444"],
+                        borderRadius: 4
+                    }]
+                },
+                options: opcionesBase
+            });
+
+            // Gráfico países
+            chartInstances.paises = new Chart(document.getElementById("chartPaises"), {
+                type: "bar",
+                data: {
+                    labels: Object.keys(d.top_paises),
+                    datasets: [{
+                        data: Object.values(d.top_paises),
+                        backgroundColor: "#E91E63",
+                        borderRadius: 4
+                    }]
+                },
+                options: { ...opcionesBase, indexAxis: "y" }
+            });
+
+            // Gráfico timeline
+            chartInstances.timeline = new Chart(document.getElementById("chartTimeline"), {
+                type: "line",
+                data: {
+                    labels: Object.keys(d.timeline),
+                    datasets: [{
+                        data: Object.values(d.timeline),
+                        borderColor: "#00BCD4",
+                        backgroundColor: "rgba(0,188,212,0.1)",
+                        fill: true,
+                        tension: 0.4,
+                        pointBackgroundColor: "#FF4444",
+                        pointRadius: 5
+                    }]
+                },
+                options: opcionesBase
+            });
+
+            analisisLoaded = true;
         });
-    </script>
+}
+
+// ── MAPA: carga lazy cuando abrís el tab ─────────────────────
+function cargarMapa() {
+    // Leaflet necesita que el contenedor sea visible antes de inicializar
+    setTimeout(() => {
+        mapaInstance = L.map('map', { center: [20, 0], zoom: 2 });
+
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+            attribution: 'CartoDB',
+            subdomains: 'abcd',
+            maxZoom: 18
+        }).addTo(mapaInstance);
+
+        // Leyenda
+        const legend = L.control({ position: 'bottomright' });
+        legend.onAdd = () => {
+            const div = L.DomUtil.create('div', 'legend');
+            div.innerHTML = `
+                <b>Radio = intensidad</b><br>
+                <span class="ldot" style="background:#FF0000;opacity:0.4"></span> 1–5 ataques<br>
+                <span class="ldot" style="background:#FF0000;opacity:0.65"></span> 6–20 ataques<br>
+                <span class="ldot" style="background:#FF0000;opacity:0.85"></span> 20+ ataques<br>
+                <span style="font-size:10px">Click en círculo para detalles</span>
+            `;
+            return div;
+        };
+        legend.addTo(mapaInstance);
+
+        // Cargar puntos desde la API
+        fetch('/api/stats')
+            .then(r => r.json())
+            .then(stats => {
+                let totalAtaques = 0;
+
+                (stats.map_points || []).forEach(p => {
+                    const radio = Math.min(6 + (p.count * 2.5), 45);
+                    const opacity = Math.min(0.4 + (p.count / 20), 0.85);
+                    totalAtaques += p.count;
+
+                    const circle = L.circleMarker([p.lat, p.lon], {
+                        radius: radio,
+                        color: '#FF2222',
+                        weight: 1.5,
+                        fill: true,
+                        fillColor: '#FF0000',
+                        fillOpacity: opacity
+                    }).addTo(mapaInstance);
+
+                    circle.bindTooltip(`
+                        <div style="font-family:monospace;font-size:12px;line-height:1.6">
+                            🌍 <b>${p.country}</b> — ${p.city}<br>
+                            💥 Ataques: <b>${p.count}</b><br>
+                            🖥️ IPs únicas: <b>${p.ips}</b>
+                        </div>
+                    `, { sticky: true });
+
+                    circle.bindPopup(`
+                        <div style="font-family:monospace;font-size:12px">
+                            <b>${p.country} — ${p.city}</b><br>
+                            Ataques: <b>${p.count}</b><br>
+                            IPs: <b>${p.ips}</b>
+                        </div>
+                    `);
+                });
+
+                // Stats overlay
+                const statsDiv = document.createElement('div');
+                statsDiv.className = 'map-stats';
+                statsDiv.innerHTML = `
+                    <div><div class="num">${totalAtaques}</div><div class="lbl">ataques en mapa</div></div>
+                    <div style="margin-top:8px"><div class="num">${(stats.map_points||[]).length}</div><div class="lbl">regiones</div></div>
+                `;
+                document.getElementById('map-container').appendChild(statsDiv);
+            });
+
+        mapaLoaded = true;
+    }, 100);
+}
+</script>
+
 </body>
 </html>
