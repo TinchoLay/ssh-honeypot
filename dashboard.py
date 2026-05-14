@@ -91,19 +91,22 @@ def get_stats(attempts):
     passwords  = Counter(a.get("password", "?") for a in ssh_attempts + ftp_attempts if a.get("password") not in [None, "-", ""])
     countries  = Counter(a.get("country", "?") for a in attempts if a.get("country") not in [None, "-", "Desconocido", "Local"])
 
-    # Puntos para el mapa — solo SSH tiene lat/lon
+    # Puntos para el mapa — agrupados por ciudad para evitar duplicados
+    # por pequeñas diferencias de coordenadas en la misma ciudad
     coordenadas = {}
     for a in ssh_attempts:
         lat = a.get("lat")
         lon = a.get("lon")
         if lat is None or lon is None:
             continue
-        key = (lat, lon)
+        country = a.get("country", "?")
+        city = a.get("city", "?")
+        key = (country, city)
         if key not in coordenadas:
             coordenadas[key] = {
                 "lat": lat, "lon": lon, "count": 0,
-                "country": a.get("country", "?"),
-                "city": a.get("city", "?"),
+                "country": country,
+                "city": city,
                 "ips": set()
             }
         coordenadas[key]["count"] += 1
