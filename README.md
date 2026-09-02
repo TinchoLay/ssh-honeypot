@@ -8,7 +8,7 @@
 
 Un honeypot es un servidor señuelo: parece real, acepta conexiones, pero no tiene nada de valor adentro. Su único trabajo es atraer atacantes y registrar todo lo que hacen. Este proyecto simula tres servicios distintos (SSH, HTTP y FTP) y quedó corriendo en una VM real de Azure, expuesta a internet, recibiendo tráfico de atacantes reales.
 
-### ¿Qué hace, en criollo?
+### ¿Qué hace?
 
 Alguien intenta conectarse a uno de los puertos abiertos, pensando que encontró un servidor de verdad. El honeypot lo deja entrar, guarda el usuario y la contraseña que probó, y ubica geográficamente su IP. A partir de ahí:
 
