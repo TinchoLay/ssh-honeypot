@@ -1,189 +1,6 @@
 # 🍯 SSH Honeypot
 
-**[Español](#español) | [English](#english)**
-
----
-
-## Español
-
-Un honeypot es un servidor señuelo: parece real, acepta conexiones, pero no tiene nada de valor adentro. Su único trabajo es atraer atacantes y registrar todo lo que hacen. Este proyecto simula tres servicios distintos (SSH, HTTP y FTP) y quedó corriendo en una VM real de Azure, expuesta a internet, recibiendo tráfico de atacantes reales.
-
-### ¿Qué hace?
-
-Alguien intenta conectarse a uno de los puertos abiertos, pensando que encontró un servidor de verdad. El honeypot lo deja entrar, guarda el usuario y la contraseña que probó, y ubica geográficamente su IP. A partir de ahí:
-
-- Un modelo de machine learning intenta adivinar qué tipo de atacante es (¿un bot que prueba miles de combinaciones, o alguien más metódico apuntando a este servidor en particular?)
-- Analiza el "banner" que manda el cliente SSH al conectarse — una especie de firma que delata qué herramienta está usando (Hydra, Metasploit, un script casero, etc.)
-- Si el atacante intenta descargar un archivo con `wget` o `curl`, el honeypot lo deja creer que funcionó, pero en paralelo descarga el archivo real para analizarlo
-- Cruza la IP contra bases de datos de reputación (AbuseIPDB, Shodan) para ver si ya fue reportada antes
-- Muestra todo en vivo en un dashboard web
-
-### Los tres servicios falsos
-
-- **SSH (puerto 2222):** el más elaborado. No solo acepta el login — abre una shell interactiva falsa. El atacante puede tipear `ls`, `whoami`, `cat /etc/passwd`, y recibe respuestas que imitan a un Ubuntu 22.04 real. Todo lo que escribe queda guardado.
-- **HTTP (puerto 8080):** un panel de administración falso, con la pinta de un router TP-Link. Apunta a atrapar scanners que buscan paneles mal protegidos.
-- **FTP (puerto 2121):** acepta la conexión, pero rechaza cualquier credencial. Sirve principalmente para ver qué usuarios y contraseñas prueban ahí también.
-
-### Cómo clasifica a los atacantes
-
-Usa un Random Forest (un tipo de modelo de machine learning) entrenado con los datos que va capturando, y lo reentrena automáticamente cada 100 intentos. Divide a los atacantes en cuatro grupos:
-
-- `bot_fuerza_bruta` — scripts que prueban credenciales a toda velocidad, sin pausas
-- `scanner` — está barriendo puertos y servicios, no busca entrar en particular
-- `script_kiddie` — usa herramientas conocidas (tipo Hydra) pero sin mucho criterio
-- `atacante_dirigido` — más lento, más humano, parece tener este servidor puntual como objetivo
-
-### Análisis de malware
-
-Cuando alguien intenta bajar un archivo, el honeypot lo descarga de verdad en segundo plano, calcula su hash (MD5 y SHA256— una especie de huella digital del archivo) y lo consulta contra VirusTotal, que lo analiza con decenas de antivirus distintos. El resultado queda guardado con el detalle de cuántos motores lo marcaron como malicioso.
-
-### Dashboard en tiempo real
-
-Un panel hecho con Flask y WebSockets que se actualiza solo apenas entra un ataque nuevo. Tiene tres pestañas:
-
-- **Stats:** totales por protocolo, usuarios y contraseñas más probados, países de origen, log en vivo
-- **Análisis:** gráficos de cuándo atacan (hora del día, día de la semana) y desde dónde
-- **Mapa:** un mapa mundial con cada ataque marcado en su punto de origen
-
-### Estructura del proyecto
-
-```
-ssh-honeypot/
-├── honeypot.py          # Punto de entrada — arranca todos los servicios
-├── fake_shell.py        # Shell SSH interactiva falsa
-├── http_honeypot.py     # Servidor HTTP honeypot
-├── ftp_honeypot.py      # Servidor FTP honeypot
-├── logger.py            # Logging central + geolocalización
-├── shell_logger.py      # Registro de comandos ejecutados
-├── stats.py             # Estadísticas en consola
-├── mapa.py              # Generador de mapa estático (folium)
-├── dashboard.py         # Dashboard Flask + WebSockets
-├── ml_classifier.py     # Clasificación ML de atacantes
-├── fingerprint.py       # Identificación de herramientas
-├── malware_capture.py   # Captura y análisis de malware
-├── threat_intel.py      # Consultas a AbuseIPDB y Shodan
-├── alertas.py           # Sistema de alertas por email
-├── config.py            # Configuración central
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-└── logs/                # Generado al correr (no incluido en repo)
-    ├── attempts.json
-    ├── http_attempts.json
-    ├── ftp_attempts.json
-    ├── shell_commands.json
-    ├── fingerprints.json
-    ├── ml_classifications.json
-    ├── malware_captures.json
-    ├── threat_intel.json
-    └── malware_samples/
-```
-
-### Stack técnico
-
-| Categoría | Tecnología |
-|---|---|
-| Lenguaje | Python 3.11 |
-| Protocolo SSH | paramiko |
-| Web framework | Flask + Flask-SocketIO |
-| Machine Learning | scikit-learn (Random Forest) |
-| Mapas | folium, Leaflet.js |
-| Geolocalización | ip-api.com |
-| Threat Intel | AbuseIPDB API, Shodan API |
-| Análisis de malware | VirusTotal API |
-| Visualización | Chart.js |
-| Infraestructura | Microsoft Azure (VM Ubuntu 22.04) |
-| Contenedores | Docker + Docker Compose |
-
-### Instalación local
-
-**Requisitos:** Python 3.9+, pip
-
-```bash
-git clone https://github.com/TinchoLay/ssh-honeypot.git
-cd ssh-honeypot
-
-python -m venv venv
-
-# Windows:
-venv\Scripts\activate
-# Linux/Mac:
-source venv/bin/activate
-
-pip install -r requirements.txt
-python honeypot.py
-```
-
-El dashboard queda en `http://localhost:5000`.
-
-### Despliegue en Azure
-
-1. Crear una VM Ubuntu en Azure (el tier gratuito B1s alcanza para pruebas)
-2. Abrir los puertos 2222, 8080, 2121 y 5000 en el Network Security Group
-3. Conectarse por SSH, instalar Python y Git, clonar el repo
-4. Crear el entorno virtual, instalar dependencias
-5. Correr directo o con Docker
-
-```bash
-git clone https://github.com/TinchoLay/ssh-honeypot.git
-cd ssh-honeypot
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python3 honeypot.py
-```
-
-Con Docker:
-
-```bash
-docker-compose up -d
-```
-
-### Variables de entorno opcionales
-
-```bash
-GEO_ENABLED=true              # Geolocalización de IPs (default: true)
-EMAIL_ENABLED=false           # Alertas por email (default: false)
-EMAIL_SENDER=tu@gmail.com
-EMAIL_PASSWORD=app_password
-EMAIL_RECEIVER=destino@gmail.com
-ALERT_THRESHOLD=5             # Intentos antes de alertar (default: 5)
-ALERT_WINDOW=60               # Ventana de tiempo en segundos (default: 60)
-THREAT_INTEL_ENABLED=false    # Consultas a AbuseIPDB/Shodan (default: false)
-ABUSEIPDB_KEY=tu_api_key
-SHODAN_KEY=tu_api_key
-VIRUSTOTAL_KEY=tu_api_key
-```
-
-### Qué se ve una vez expuesto a internet real
-
-- Los primeros intentos llegan en minutos, sin necesidad de publicitar nada
-- La mayoría del tráfico SSH es de bots que prueban siempre las mismas combinaciones: `root:123456`, `admin:admin`, `user:password`
-- El tráfico HTTP viene sobre todo de scanners buscando paneles de administración (`/login`, `/admin`, `/wp-admin`)
-- Las IPs más activas salen de nodos de salida de Tor, VPS de Linode/DigitalOcean, y bloques de IP chinos
-- Los bots son sospechosamente constantes: intervalos de milisegundos entre intento e intento, sin ninguna variación
-
-### Lo que aprendí armando esto
-
-- Cómo funciona el protocolo SSH por dentro: negociación de claves, autenticación, canales
-- Servidores TCP crudos con `socket` en Python
-- Usar paramiko para interceptar y controlar sesiones SSH
-- Flask con WebSockets para que el dashboard se actualice solo
-- Entrenar e integrar un modelo de scikit-learn con datos reales
-- Consumir APIs REST (ip-api, AbuseIPDB, Shodan, VirusTotal)
-- Desplegar en la nube: VM, networking, reglas de firewall en Azure
-- Concurrencia con `threading`
-- Los dolores de cabeza reales de producción: correr en background, que los logs no se pierdan, reinicio automático si algo se cae
-
-### Consideraciones éticas y legales
-
-Este proyecto es para aprender ciberseguridad, nada más. El honeypot solo captura datos de gente que intenta entrar sin permiso a un servidor que es mío. No lo uses para atacar sistemas ajenos ni para nada malicioso.
-
-### Autor
-
-**Martín** — Estudiante de ciberseguridad orientado a roles de SOC Analyst.
-
-[GitHub](https://github.com/TinchoLay) · [LinkedIn](https://linkedin.com/in/tu-perfil)
+**[English](#english) | [Español](#español)**
 
 ---
 
@@ -364,6 +181,189 @@ This project exists purely to learn cybersecurity. The honeypot only captures da
 
 ### Author
 
-**Martín** — Cybersecurity student aiming for SOC Analyst roles.
+**Martín** — IT Support & Cybersecurity | SOC L1 track
 
-[GitHub](https://github.com/TinchoLay) · [LinkedIn](https://linkedin.com/in/tu-perfil)
+[GitHub](https://github.com/TinchoLay) · [LinkedIn](https://www.linkedin.com/in/martin-chancalay-902b543a8)
+
+---
+
+## Español
+
+Un honeypot es un servidor señuelo: parece real, acepta conexiones, pero no tiene nada de valor adentro. Su único trabajo es atraer atacantes y registrar todo lo que hacen. Este proyecto simula tres servicios distintos (SSH, HTTP y FTP) y quedó corriendo en una VM real de Azure, expuesta a internet, recibiendo tráfico de atacantes reales.
+
+### ¿Qué hace?
+
+Alguien intenta conectarse a uno de los puertos abiertos, pensando que encontró un servidor de verdad. El honeypot lo deja entrar, guarda el usuario y la contraseña que probó, y ubica geográficamente su IP. A partir de ahí:
+
+- Un modelo de machine learning intenta adivinar qué tipo de atacante es (¿un bot que prueba miles de combinaciones, o alguien más metódico apuntando a este servidor en particular?)
+- Analiza el "banner" que manda el cliente SSH al conectarse — una especie de firma que delata qué herramienta está usando (Hydra, Metasploit, un script casero, etc.)
+- Si el atacante intenta descargar un archivo con `wget` o `curl`, el honeypot lo deja creer que funcionó, pero en paralelo descarga el archivo real para analizarlo
+- Cruza la IP contra bases de datos de reputación (AbuseIPDB, Shodan) para ver si ya fue reportada antes
+- Muestra todo en vivo en un dashboard web
+
+### Los tres servicios falsos
+
+- **SSH (puerto 2222):** el más elaborado. No solo acepta el login — abre una shell interactiva falsa. El atacante puede tipear `ls`, `whoami`, `cat /etc/passwd`, y recibe respuestas que imitan a un Ubuntu 22.04 real. Todo lo que escribe queda guardado.
+- **HTTP (puerto 8080):** un panel de administración falso, con la pinta de un router TP-Link. Apunta a atrapar scanners que buscan paneles mal protegidos.
+- **FTP (puerto 2121):** acepta la conexión, pero rechaza cualquier credencial. Sirve principalmente para ver qué usuarios y contraseñas prueban ahí también.
+
+### Cómo clasifica a los atacantes
+
+Usa un Random Forest (un tipo de modelo de machine learning) entrenado con los datos que va capturando, y lo reentrena automáticamente cada 100 intentos. Divide a los atacantes en cuatro grupos:
+
+- `bot_fuerza_bruta` — scripts que prueban credenciales a toda velocidad, sin pausas
+- `scanner` — está barriendo puertos y servicios, no busca entrar en particular
+- `script_kiddie` — usa herramientas conocidas (tipo Hydra) pero sin mucho criterio
+- `atacante_dirigido` — más lento, más humano, parece tener este servidor puntual como objetivo
+
+### Análisis de malware
+
+Cuando alguien intenta bajar un archivo, el honeypot lo descarga de verdad en segundo plano, calcula su hash (MD5 y SHA256— una especie de huella digital del archivo) y lo consulta contra VirusTotal, que lo analiza con decenas de antivirus distintos. El resultado queda guardado con el detalle de cuántos motores lo marcaron como malicioso.
+
+### Dashboard en tiempo real
+
+Un panel hecho con Flask y WebSockets que se actualiza solo apenas entra un ataque nuevo. Tiene tres pestañas:
+
+- **Stats:** totales por protocolo, usuarios y contraseñas más probados, países de origen, log en vivo
+- **Análisis:** gráficos de cuándo atacan (hora del día, día de la semana) y desde dónde
+- **Mapa:** un mapa mundial con cada ataque marcado en su punto de origen
+
+### Estructura del proyecto
+
+```
+ssh-honeypot/
+├── honeypot.py          # Punto de entrada — arranca todos los servicios
+├── fake_shell.py        # Shell SSH interactiva falsa
+├── http_honeypot.py     # Servidor HTTP honeypot
+├── ftp_honeypot.py      # Servidor FTP honeypot
+├── logger.py            # Logging central + geolocalización
+├── shell_logger.py      # Registro de comandos ejecutados
+├── stats.py             # Estadísticas en consola
+├── mapa.py              # Generador de mapa estático (folium)
+├── dashboard.py         # Dashboard Flask + WebSockets
+├── ml_classifier.py     # Clasificación ML de atacantes
+├── fingerprint.py       # Identificación de herramientas
+├── malware_capture.py   # Captura y análisis de malware
+├── threat_intel.py      # Consultas a AbuseIPDB y Shodan
+├── alertas.py           # Sistema de alertas por email
+├── config.py            # Configuración central
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── logs/                # Generado al correr (no incluido en repo)
+    ├── attempts.json
+    ├── http_attempts.json
+    ├── ftp_attempts.json
+    ├── shell_commands.json
+    ├── fingerprints.json
+    ├── ml_classifications.json
+    ├── malware_captures.json
+    ├── threat_intel.json
+    └── malware_samples/
+```
+
+### Stack técnico
+
+| Categoría | Tecnología |
+|---|---|
+| Lenguaje | Python 3.11 |
+| Protocolo SSH | paramiko |
+| Web framework | Flask + Flask-SocketIO |
+| Machine Learning | scikit-learn (Random Forest) |
+| Mapas | folium, Leaflet.js |
+| Geolocalización | ip-api.com |
+| Threat Intel | AbuseIPDB API, Shodan API |
+| Análisis de malware | VirusTotal API |
+| Visualización | Chart.js |
+| Infraestructura | Microsoft Azure (VM Ubuntu 22.04) |
+| Contenedores | Docker + Docker Compose |
+
+### Instalación local
+
+**Requisitos:** Python 3.9+, pip
+
+```bash
+git clone https://github.com/TinchoLay/ssh-honeypot.git
+cd ssh-honeypot
+
+python -m venv venv
+
+# Windows:
+venv\Scripts\activate
+# Linux/Mac:
+source venv/bin/activate
+
+pip install -r requirements.txt
+python honeypot.py
+```
+
+El dashboard queda en `http://localhost:5000`.
+
+### Despliegue en Azure
+
+1. Crear una VM Ubuntu en Azure (el tier gratuito B1s alcanza para pruebas)
+2. Abrir los puertos 2222, 8080, 2121 y 5000 en el Network Security Group
+3. Conectarse por SSH, instalar Python y Git, clonar el repo
+4. Crear el entorno virtual, instalar dependencias
+5. Correr directo o con Docker
+
+```bash
+git clone https://github.com/TinchoLay/ssh-honeypot.git
+cd ssh-honeypot
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python3 honeypot.py
+```
+
+Con Docker:
+
+```bash
+docker-compose up -d
+```
+
+### Variables de entorno opcionales
+
+```bash
+GEO_ENABLED=true              # Geolocalización de IPs (default: true)
+EMAIL_ENABLED=false           # Alertas por email (default: false)
+EMAIL_SENDER=tu@gmail.com
+EMAIL_PASSWORD=app_password
+EMAIL_RECEIVER=destino@gmail.com
+ALERT_THRESHOLD=5             # Intentos antes de alertar (default: 5)
+ALERT_WINDOW=60               # Ventana de tiempo en segundos (default: 60)
+THREAT_INTEL_ENABLED=false    # Consultas a AbuseIPDB/Shodan (default: false)
+ABUSEIPDB_KEY=tu_api_key
+SHODAN_KEY=tu_api_key
+VIRUSTOTAL_KEY=tu_api_key
+```
+
+### Qué se ve una vez expuesto a internet real
+
+- Los primeros intentos llegan en minutos, sin necesidad de publicitar nada
+- La mayoría del tráfico SSH es de bots que prueban siempre las mismas combinaciones: `root:123456`, `admin:admin`, `user:password`
+- El tráfico HTTP viene sobre todo de scanners buscando paneles de administración (`/login`, `/admin`, `/wp-admin`)
+- Las IPs más activas salen de nodos de salida de Tor, VPS de Linode/DigitalOcean, y bloques de IP chinos
+- Los bots son sospechosamente constantes: intervalos de milisegundos entre intento e intento, sin ninguna variación
+
+### Lo que aprendí armando esto
+
+- Cómo funciona el protocolo SSH por dentro: negociación de claves, autenticación, canales
+- Servidores TCP crudos con `socket` en Python
+- Usar paramiko para interceptar y controlar sesiones SSH
+- Flask con WebSockets para que el dashboard se actualice solo
+- Entrenar e integrar un modelo de scikit-learn con datos reales
+- Consumir APIs REST (ip-api, AbuseIPDB, Shodan, VirusTotal)
+- Desplegar en la nube: VM, networking, reglas de firewall en Azure
+- Concurrencia con `threading`
+- Los dolores de cabeza reales de producción: correr en background, que los logs no se pierdan, reinicio automático si algo se cae
+
+### Consideraciones éticas y legales
+
+Este proyecto es para aprender ciberseguridad, nada más. El honeypot solo captura datos de gente que intenta entrar sin permiso a un servidor que es mío. No lo uses para atacar sistemas ajenos ni para nada malicioso.
+
+### Autor
+
+**Martín** — Soporte IT y ciberseguridad | Camino a SOC L1
+
+[GitHub](https://github.com/TinchoLay) · [LinkedIn](https://www.linkedin.com/in/martin-chancalay-902b543a8)
