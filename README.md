@@ -45,6 +45,14 @@ A Flask + WebSockets panel that updates itself the moment a new attack comes in.
 - **Analysis:** charts of when attacks happen (hour of day, day of week) and where from
 - **Map:** a world map with every attack plotted at its point of origin
 
+![Stats tab, captured at 51 events from 21 unique IPs](assets/01-dashboard-stats.png)
+
+![Analysis tab: attacks by hour of day, day of the week, top countries and timeline](assets/02-dashboard-analysis.png)
+
+![Map tab: attack origins on a world map](assets/03-attack-map.png)
+
+![The honeypot starting up: SSH on 2222, HTTP on 8080, FTP on 2121, dashboard on 5000](assets/04-startup-terminal.png)
+
 ### Project structure
 
 ```
@@ -158,10 +166,12 @@ VIRUSTOTAL_KEY=your_api_key
 ### What real internet traffic looks like
 
 - The first connection attempts show up within minutes, no need to advertise the server anywhere
-- Most SSH traffic comes from bots trying the same combinations over and over: `root:123456`, `admin:admin`, `user:password`
+- SSH was quiet in my capture (5 attempts), all with default usernames and weak passwords: `root`, `admin` and `user` with `123456`, `password`, `admin123`, `qwerty` and `admin`
 - HTTP traffic mostly comes from scanners hunting for admin panels (`/login`, `/admin`, `/wp-admin`)
 - The most active IPs trace back to Tor exit nodes, Linode/DigitalOcean VPS ranges, and Chinese IP blocks
 - The bots are suspiciously consistent — millisecond gaps between attempts, with basically no variation
+
+In my capture: 58 events from 23 unique IPs (53 HTTP, 5 SSH) across four countries. It is a small sample, but it is real traffic.
 
 ### What I learned building this
 
@@ -227,6 +237,14 @@ Un panel hecho con Flask y WebSockets que se actualiza solo apenas entra un ataq
 - **Stats:** totales por protocolo, usuarios y contraseñas más probados, países de origen, log en vivo
 - **Análisis:** gráficos de cuándo atacan (hora del día, día de la semana) y desde dónde
 - **Mapa:** un mapa mundial con cada ataque marcado en su punto de origen
+
+![Pestaña Stats, capturada con 51 eventos de 21 IPs únicas](assets/01-dashboard-stats.png)
+
+![Pestaña Análisis: ataques por hora del día, día de la semana, países y línea de tiempo](assets/02-dashboard-analysis.png)
+
+![Pestaña Mapa: origen de los ataques en un mapa mundial](assets/03-attack-map.png)
+
+![El honeypot arrancando: SSH en 2222, HTTP en 8080, FTP en 2121, dashboard en 5000](assets/04-startup-terminal.png)
 
 ### Estructura del proyecto
 
@@ -341,10 +359,12 @@ VIRUSTOTAL_KEY=tu_api_key
 ### Qué se ve una vez expuesto a internet real
 
 - Los primeros intentos llegan en minutos, sin necesidad de publicitar nada
-- La mayoría del tráfico SSH es de bots que prueban siempre las mismas combinaciones: `root:123456`, `admin:admin`, `user:password`
+- SSH estuvo tranquilo en mi captura (5 intentos), todos con usuarios por defecto y contraseñas débiles: `root`, `admin` y `user` con `123456`, `password`, `admin123`, `qwerty` y `admin`
 - El tráfico HTTP viene sobre todo de scanners buscando paneles de administración (`/login`, `/admin`, `/wp-admin`)
 - Las IPs más activas salen de nodos de salida de Tor, VPS de Linode/DigitalOcean, y bloques de IP chinos
 - Los bots son sospechosamente constantes: intervalos de milisegundos entre intento e intento, sin ninguna variación
+
+En mi captura: 58 eventos de 23 IPs únicas (53 HTTP, 5 SSH) en cuatro países. Es una muestra chica, pero es tráfico real.
 
 ### Lo que aprendí armando esto
 
