@@ -89,6 +89,7 @@ def analizar_ip(ip):
     
     resultado = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "event_type": "threat_intel",
         "ip": ip,
         "abuseipdb": consultar_abuseipdb(ip),
         "shodan": consultar_shodan(ip)

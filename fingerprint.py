@@ -146,6 +146,7 @@ def hacer_fingerprint(ip, username, password):
     
     resultado = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "event_type": "fingerprint",
         "ip": ip,
         "banner": banner,
         "herramienta": herramienta["herramienta"],

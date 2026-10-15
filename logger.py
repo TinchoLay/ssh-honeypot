@@ -51,6 +51,7 @@ def save_attempt(ip, username, password):
 
     attempt = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "event_type": "ssh_login_attempt",
         "ip": ip,
         "country": geo["country"],
         "city": geo["city"],

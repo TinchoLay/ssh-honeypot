@@ -20,6 +20,7 @@ def save_ftp_attempt(ip, username, password):
     
     attempt = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "event_type": "ftp_login_attempt",
         "ip": ip,
         "username": username,
         "password": password

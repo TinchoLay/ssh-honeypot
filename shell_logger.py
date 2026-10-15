@@ -11,6 +11,7 @@ def save_command(ip, command, nota=""):
     
     registro = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "event_type": "shell_command",
         "ip": ip,
         "command": command,
         "nota": nota
