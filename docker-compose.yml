@@ -8,6 +8,8 @@ services:
       - "2222:2222"    # SSH
       - "8080:8080"    # HTTP
       - "2121:2121"    # FTP
+      # Dashboard solo en localhost del host: se accede por tunel SSH, nunca publico
+      - "127.0.0.1:5000:5000"
     volumes:
       # Montar la carpeta logs en tu PC para ver los datos capturados
       # aunque el contenedor se reinicie
@@ -16,4 +18,6 @@ services:
       - GEO_ENABLED=true
       - EMAIL_ENABLED=false
       - THREAT_INTEL_ENABLED=false
+      # La clave viene del archivo .env (fuera de git), nunca del codigo
+      - VIRUSTOTAL_KEY=${VIRUSTOTAL_KEY:-}
     restart: unless-stopped    # Se reinicia automáticamente si falla
