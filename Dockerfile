@@ -1,6 +1,7 @@
-# Imagen base — Python 3.11 sobre Alpine Linux
-# Alpine es una distro muy liviana (~5MB) ideal para contenedores
-FROM python:3.11-alpine
+# Imagen base: Python 3.11 sobre Debian (slim)
+# Se usa Debian y no Alpine porque scikit-learn no publica wheels para Alpine (musl):
+# en Alpine pip intenta compilarlo desde el codigo fuente y falla sin g++.
+FROM python:3.11-slim
 
 # Metadatos del contenedor
 LABEL maintainer="TinchoLay"
@@ -15,11 +16,8 @@ WORKDIR /app
 # cada vez que cambia el código
 COPY requirements.txt .
 
-# Instalar dependencias del sistema necesarias para paramiko
-# gcc y musl-dev son necesarios para compilar algunas librerías de Python en Alpine
-RUN apk add --no-cache gcc musl-dev libffi-dev && \
-    pip install --no-cache-dir -r requirements.txt && \
-    apk del gcc musl-dev libffi-dev
+# Instalar dependencias de Python (todas tienen wheels precompilados para Debian)
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar el resto del código
 COPY *.py .
