@@ -79,7 +79,7 @@ def save_http_attempt(ip, method, path, username=None, password=None, user_agent
     
     attempt = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "event_type": "http_request",
+        "honeypot_event": "http_request",
         "ip": ip,
         "method": method,
         "path": path,
