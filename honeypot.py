@@ -46,7 +46,7 @@ def start_dashboard():
     try:
         from dashboard import socketio, app
         print("🖥️  Dashboard activo en http://0.0.0.0:5000")
-        socketio.run(app, debug=False, host="0.0.0.0", port=5000, use_reloader=False)
+        socketio.run(app, debug=False, host="0.0.0.0", port=5000, use_reloader=False, allow_unsafe_werkzeug=True)
     except Exception as e:
         print(f"⚠️  Dashboard no pudo iniciar: {e}")
 

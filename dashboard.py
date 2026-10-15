@@ -258,4 +258,4 @@ if __name__ == "__main__":
     print("   /analisis  → Análisis temporal")
     print("   /mapa      → Mapa de calor mundial")
     print("   /api/stats → JSON con stats actuales")
-    socketio.run(app, debug=False, host="0.0.0.0", port=5000)
+    socketio.run(app, debug=False, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)

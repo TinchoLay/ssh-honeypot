@@ -34,6 +34,8 @@ EXPOSE 2121
 
 # Variables de entorno con valores por defecto
 # Se pueden sobreescribir al correr el contenedor
+# Salida sin buffer: que los mensajes aparezcan al instante en docker compose logs
+ENV PYTHONUNBUFFERED=1
 ENV GEO_ENABLED=true
 ENV EMAIL_ENABLED=false
 ENV THREAT_INTEL_ENABLED=false
