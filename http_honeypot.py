@@ -3,7 +3,7 @@ import threading
 import json
 import os
 from datetime import datetime
-from config import HOST, HTTP_PORT, HTTP_LOG
+from config import HOST, HTTP_PORT, HTTP_LOG, GEO_ENABLED
 
 # Página de login falsa — parece un router o panel de admin real
 LOGIN_PAGE = """HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n
@@ -73,10 +73,33 @@ LOGIN_FAILED = """HTTP/1.1 401 Unauthorized\r\nContent-Type: text/html\r\n\r\n
 </html>
 """
 
+_geo_cache = {}
+
+def _geo_http(ip):
+    """Geolocaliza la IP reutilizando get_geolocation del logger SSH.
+    Cachea por IP: los scanners mandan rafagas desde la misma IP y ip-api.com
+    (plan gratuito) limita a unas 45 consultas por minuto."""
+    sin_geo = {"country": "-", "city": "-", "isp": "-", "lat": None, "lon": None}
+    if not GEO_ENABLED:
+        return sin_geo
+    if ip in _geo_cache:
+        return _geo_cache[ip]
+    try:
+        from logger import get_geolocation
+        geo = get_geolocation(ip)
+    except Exception:
+        return sin_geo
+    # Los fallos ("Desconocido") no se cachean, asi se reintenta mas tarde
+    if geo.get("country") != "Desconocido":
+        _geo_cache[ip] = geo
+    return geo
+
 def save_http_attempt(ip, method, path, username=None, password=None, user_agent=""):
     """Guarda un intento HTTP en el log."""
     os.makedirs("logs", exist_ok=True)
     
+    geo = _geo_http(ip)
+
     attempt = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "honeypot_event": "http_request",
@@ -85,7 +108,12 @@ def save_http_attempt(ip, method, path, username=None, password=None, user_agent
         "path": path,
         "username": username,
         "password": password,
-        "user_agent": user_agent
+        "user_agent": user_agent,
+        "country": geo["country"],
+        "city": geo["city"],
+        "isp": geo["isp"],
+        "lat": geo["lat"],
+        "lon": geo["lon"]
     }
     
     with open(HTTP_LOG, "a") as f:
