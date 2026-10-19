@@ -104,6 +104,7 @@
 
         /* ── MAPA ── */
         #map-container { position: relative; }
+        .tiles-oscuros { filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.6); }
         #map { width: 100%; height: calc(100vh - 200px); min-height: 400px; border-radius: 8px; border: 1px solid #30363d; }
         .map-stats {
             position: absolute;
@@ -434,11 +435,15 @@ function cargarMapa() {
     setTimeout(() => {
         mapaInstance = L.map('map', { center: [20, 0], zoom: 2 });
 
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
-            attribution: 'CartoDB',
-            subdomains: 'abcd',
+        // CARTO exige API key desde hace un tiempo (los tiles salian con "API KEY REQUIRED").
+        // OpenStreetMap es gratis y sin key; el filtro CSS (.tiles-oscuros) lo vuelve oscuro.
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors',
+            className: 'tiles-oscuros',
+            minZoom: 2,
             maxZoom: 18
         }).addTo(mapaInstance);
+        setTimeout(() => mapaInstance.invalidateSize(), 200);
 
         // Leyenda
         const legend = L.control({ position: 'bottomright' });
