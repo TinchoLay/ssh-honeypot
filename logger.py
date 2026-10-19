@@ -9,7 +9,20 @@ from threat_intel import analizar_ip
 from ml_classifier import registrar_intento_ml, clasificar_atacante
 from fingerprint import hacer_fingerprint
 
+_geo_cache = {}
+
 def get_geolocation(ip):
+    """Geolocaliza una IP. Cachea por IP: ip-api.com (plan gratuito) limita a
+    unas 45 consultas por minuto y un scanner puede repetir la misma IP muchas veces.
+    Los fallos no se cachean para reintentar mas tarde."""
+    if ip in _geo_cache:
+        return _geo_cache[ip]
+    geo = _consultar_geolocation(ip)
+    if geo.get("country") not in ("Desconocido",):
+        _geo_cache[ip] = geo
+    return geo
+
+def _consultar_geolocation(ip):
     if ip.startswith("127.") or ip.startswith("192.168.") or ip == "localhost":
         return {
             "country": "Local",

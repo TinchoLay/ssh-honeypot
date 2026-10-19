@@ -282,6 +282,13 @@ function switchTab(name) {
 // ── WEBSOCKET: STATS EN TIEMPO REAL ───────────────────────────
 const socket = io();
 
+// Los datos vienen de atacantes: se escapan antes de meterlos en el DOM (evita XSS almacenado)
+function esc(v) {
+    return String(v === null || v === undefined ? '' : v)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 socket.on("update", function(stats) {
     document.getElementById("total").textContent = stats.total;
     document.getElementById("unique_ips").textContent = stats.unique_ips;
@@ -290,28 +297,28 @@ socket.on("update", function(stats) {
 
     document.getElementById("top_users").innerHTML =
         stats.top_users.map(i =>
-            `<div class="item"><span>${i.name}</span><span class="val">${i.count}x</span></div>`
+            `<div class="item"><span>${esc(i.name)}</span><span class="val">${i.count}x</span></div>`
         ).join("");
 
     document.getElementById("top_passwords").innerHTML =
         stats.top_passwords.map(i =>
-            `<div class="item"><span>${i.name}</span><span class="val">${i.count}x</span></div>`
+            `<div class="item"><span>${esc(i.name)}</span><span class="val">${i.count}x</span></div>`
         ).join("");
 
     document.getElementById("top_countries").innerHTML =
         stats.top_countries.map(i =>
-            `<div class="item"><span>${i.name}</span><span class="val">${i.count}x</span></div>`
+            `<div class="item"><span>${esc(i.name)}</span><span class="val">${i.count}x</span></div>`
         ).join("");
 
     document.getElementById("recent_attacks").innerHTML =
         stats.recent.map(a => {
             const tipo = a.tipo || 'SSH';
             return `<div class="log">
-                <span class="tipo ${tipo}">${tipo}</span>
-                <span>${a.timestamp}</span> —
-                <span class="ip">${a.ip}</span>
-                (<span class="country">${a.country || '-'}</span>) →
-                <span class="creds">${a.username || '-'}:${a.password || '-'}</span>
+                <span class="tipo ${esc(tipo)}">${esc(tipo)}</span>
+                <span>${esc(a.timestamp)}</span> —
+                <span class="ip">${esc(a.ip)}</span>
+                (<span class="country">${esc(a.country || '-')}</span>) →
+                <span class="creds">${esc(a.username || '-')}:${esc(a.password || '-')}</span>
             </div>`;
         }).join("");
 });

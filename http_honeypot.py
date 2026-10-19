@@ -1,4 +1,5 @@
 import socket
+import re
 import threading
 import json
 import os
@@ -73,28 +74,18 @@ LOGIN_FAILED = """HTTP/1.1 401 Unauthorized\r\nContent-Type: text/html\r\n\r\n
 </html>
 """
 
-_geo_cache = {}
-
 def _geo_http(ip):
-    """Geolocaliza la IP reutilizando get_geolocation del logger SSH.
-    Cachea por IP: los scanners mandan rafagas desde la misma IP y ip-api.com
-    (plan gratuito) limita a unas 45 consultas por minuto."""
+    """Geolocaliza la IP con get_geolocation del logger SSH (que cachea por IP)."""
     sin_geo = {"country": "-", "city": "-", "isp": "-", "lat": None, "lon": None}
     if not GEO_ENABLED:
         return sin_geo
-    if ip in _geo_cache:
-        return _geo_cache[ip]
     try:
         from logger import get_geolocation
-        geo = get_geolocation(ip)
+        return get_geolocation(ip)
     except Exception:
         return sin_geo
-    # Los fallos ("Desconocido") no se cachean, asi se reintenta mas tarde
-    if geo.get("country") != "Desconocido":
-        _geo_cache[ip] = geo
-    return geo
 
-def save_http_attempt(ip, method, path, username=None, password=None, user_agent=""):
+def save_http_attempt(ip, method, path, username=None, password=None, user_agent="", body=""):
     """Guarda un intento HTTP en el log."""
     os.makedirs("logs", exist_ok=True)
     
@@ -109,6 +100,8 @@ def save_http_attempt(ip, method, path, username=None, password=None, user_agent
         "username": username,
         "password": password,
         "user_agent": user_agent,
+        # Cuerpo del request (truncado): ahi viajan los comandos de exploits tipo GPON
+        "http_body": body[:2000],
         "country": geo["country"],
         "city": geo["city"],
         "isp": geo["isp"],
@@ -137,7 +130,7 @@ def parsear_request(raw):
     try:
         lines = raw.split("\r\n")
         if not lines:
-            return None, None, None, None, None
+            return None, None, None, None, None, ""
         
         # Primera línea: GET /path HTTP/1.1
         primera = lines[0].split(" ")
@@ -154,8 +147,10 @@ def parsear_request(raw):
         # Si es POST, extraer el body
         username = None
         password = None
-        if method == "POST" and "\r\n\r\n" in raw:
+        body = ""
+        if "\r\n\r\n" in raw:
             body = raw.split("\r\n\r\n", 1)[1]
+        if method == "POST" and body:
             # Parsear campos del form: username=root&password=1234
             params = {}
             for param in body.split("&"):
@@ -166,27 +161,48 @@ def parsear_request(raw):
             username = params.get("username") or params.get("user") or params.get("login")
             password = params.get("password") or params.get("pass") or params.get("pwd")
         
-        return method, path, user_agent, username, password
+        return method, path, user_agent, username, password, body
     
     except Exception:
-        return None, None, None, None, None
+        return None, None, None, None, None, ""
+
+def leer_request(client_socket):
+    """Lee el request. Si es un POST espera el cuerpo segun Content-Length (tope 8 KB)."""
+    data = client_socket.recv(4096)
+    if not data:
+        return ""
+    if data.startswith(b"POST") and b"\r\n\r\n" in data:
+        head, _, body = data.partition(b"\r\n\r\n")
+        m = re.search(rb"content-length:\s*(\d+)", head, re.I)
+        if m:
+            faltan = min(int(m.group(1)), 8192) - len(body)
+            while faltan > 0:
+                try:
+                    chunk = client_socket.recv(min(faltan, 4096))
+                except Exception:
+                    break
+                if not chunk:
+                    break
+                data += chunk
+                faltan -= len(chunk)
+    return data.decode("utf-8", errors="ignore")
 
 def manejar_http(client_socket, client_ip):
     """Maneja una conexión HTTP entrante."""
     try:
         client_socket.settimeout(10)
-        raw = client_socket.recv(4096).decode("utf-8", errors="ignore")
+        raw = leer_request(client_socket)
         
         if not raw:
             return
         
-        method, path, user_agent, username, password = parsear_request(raw)
+        method, path, user_agent, username, password, body = parsear_request(raw)
         
         if method is None:
             return
         
         # Registrar el intento
-        save_http_attempt(client_ip, method, path, username, password, user_agent)
+        save_http_attempt(client_ip, method, path, username, password, user_agent, body)
         
         # Responder según el tipo de request
         if method == "POST" and path in ["/login", "/admin", "/signin"]:
