@@ -460,51 +460,76 @@ function cargarMapa() {
         };
         legend.addTo(mapaInstance);
 
+        // Filtro de tipo de ataque (Todos / SSH / HTTP / FTP)
+        const filtro = L.control({ position: 'topright' });
+        filtro.onAdd = () => {
+            const div = L.DomUtil.create('div', 'legend');
+            div.innerHTML = ['TODOS', 'SSH', 'HTTP', 'FTP'].map(t =>
+                `<button class="map-filtro" data-tipo="${t}" style="margin:2px;padding:3px 8px;cursor:pointer;background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;font-family:monospace">${t === 'TODOS' ? 'Todos' : t}</button>`
+            ).join('');
+            L.DomEvent.disableClickPropagation(div);
+            return div;
+        };
+        filtro.addTo(mapaInstance);
+
+        const capa = L.layerGroup().addTo(mapaInstance);
+        let puntosMapa = [];
+
+        const statsDiv = document.createElement('div');
+        statsDiv.className = 'map-stats';
+        document.getElementById('map-container').appendChild(statsDiv);
+
+        function dibujarMapa(tipoSel) {
+            capa.clearLayers();
+            let totalAtaques = 0, regiones = 0;
+            const tipos = tipoSel === 'TODOS' ? ['SSH', 'HTTP', 'FTP'] : [tipoSel];
+
+            puntosMapa.forEach(p => {
+                let count = 0, ips = 0;
+                const detalle = [];
+                tipos.forEach(t => {
+                    const d = (p.por_tipo || {})[t];
+                    if (d) { count += d.count; ips += d.ips; detalle.push(`${t}: <b>${d.count}</b>`); }
+                });
+                if (!count) return;
+                regiones++;
+                totalAtaques += count;
+
+                const radio = Math.min(6 + (count * 2.5), 45);
+                const opacity = Math.min(0.4 + (count / 20), 0.85);
+                const circle = L.circleMarker([p.lat, p.lon], {
+                    radius: radio, color: '#FF2222', weight: 1.5,
+                    fill: true, fillColor: '#FF0000', fillOpacity: opacity
+                }).addTo(capa);
+
+                const html = `
+                    <div style="font-family:monospace;font-size:12px;line-height:1.6">
+                        <b>${esc(p.country)}</b> — ${esc(p.city)}<br>
+                        Ataques: <b>${count}</b> (${detalle.join(' · ')})<br>
+                        IPs: <b>${ips}</b>
+                    </div>`;
+                circle.bindTooltip(html, { sticky: true });
+                circle.bindPopup(html);
+            });
+
+            statsDiv.innerHTML = `
+                <div><div class="num">${totalAtaques}</div><div class="lbl">ataques en mapa</div></div>
+                <div style="margin-top:8px"><div class="num">${regiones}</div><div class="lbl">regiones</div></div>
+            `;
+            document.querySelectorAll('.map-filtro').forEach(b => {
+                b.style.borderColor = b.dataset.tipo === tipoSel ? '#58a6ff' : '#30363d';
+            });
+        }
+
+        document.querySelectorAll('.map-filtro').forEach(b =>
+            b.addEventListener('click', () => dibujarMapa(b.dataset.tipo)));
+
         // Cargar puntos desde la API
         fetch('/api/stats')
             .then(r => r.json())
             .then(stats => {
-                let totalAtaques = 0;
-
-                (stats.map_points || []).forEach(p => {
-                    const radio = Math.min(6 + (p.count * 2.5), 45);
-                    const opacity = Math.min(0.4 + (p.count / 20), 0.85);
-                    totalAtaques += p.count;
-
-                    const circle = L.circleMarker([p.lat, p.lon], {
-                        radius: radio,
-                        color: '#FF2222',
-                        weight: 1.5,
-                        fill: true,
-                        fillColor: '#FF0000',
-                        fillOpacity: opacity
-                    }).addTo(mapaInstance);
-
-                    circle.bindTooltip(`
-                        <div style="font-family:monospace;font-size:12px;line-height:1.6">
-                            🌍 <b>${p.country}</b> — ${p.city}<br>
-                            💥 Ataques: <b>${p.count}</b><br>
-                            🖥️ IPs únicas: <b>${p.ips}</b>
-                        </div>
-                    `, { sticky: true });
-
-                    circle.bindPopup(`
-                        <div style="font-family:monospace;font-size:12px">
-                            <b>${p.country} — ${p.city}</b><br>
-                            Ataques: <b>${p.count}</b><br>
-                            IPs: <b>${p.ips}</b>
-                        </div>
-                    `);
-                });
-
-                // Stats overlay
-                const statsDiv = document.createElement('div');
-                statsDiv.className = 'map-stats';
-                statsDiv.innerHTML = `
-                    <div><div class="num">${totalAtaques}</div><div class="lbl">ataques en mapa</div></div>
-                    <div style="margin-top:8px"><div class="num">${(stats.map_points||[]).length}</div><div class="lbl">regiones</div></div>
-                `;
-                document.getElementById('map-container').appendChild(statsDiv);
+                puntosMapa = stats.map_points || [];
+                dibujarMapa('TODOS');
             });
 
         mapaLoaded = true;

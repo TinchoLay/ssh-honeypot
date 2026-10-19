@@ -94,31 +94,35 @@ def get_stats(attempts):
     # Puntos para el mapa — agrupados por ciudad para evitar duplicados
     # por pequeñas diferencias de coordenadas en la misma ciudad
     coordenadas = {}
-    for a in ssh_attempts:
+    for a in attempts:
         lat = a.get("lat")
         lon = a.get("lon")
         if lat is None or lon is None:
             continue
+        tipo = a.get("tipo", "SSH")
         country = a.get("country", "?")
         city = a.get("city", "?")
         key = (country, city)
         if key not in coordenadas:
             coordenadas[key] = {
-                "lat": lat, "lon": lon, "count": 0,
-                "country": country,
-                "city": city,
-                "ips": set()
+                "lat": lat, "lon": lon,
+                "country": country, "city": city,
+                "por_tipo": {}
             }
-        coordenadas[key]["count"] += 1
-        coordenadas[key]["ips"].add(a.get("ip", ""))
+        t = coordenadas[key]["por_tipo"].setdefault(tipo, {"count": 0, "ips": set()})
+        t["count"] += 1
+        t["ips"].add(a.get("ip", ""))
 
     map_points = [
         {
             "lat": v["lat"], "lon": v["lon"],
-            "count": v["count"],
-            "country": v["country"],
-            "city": v["city"],
-            "ips": len(v["ips"])
+            "country": v["country"], "city": v["city"],
+            # totales (los usa tambien la pagina vieja /mapa)
+            "count": sum(d["count"] for d in v["por_tipo"].values()),
+            "ips": len(set().union(*(d["ips"] for d in v["por_tipo"].values()))),
+            # {"SSH": {"count": n, "ips": m}, "HTTP": {...}} para filtrar en el front
+            "por_tipo": {t: {"count": d["count"], "ips": len(d["ips"])}
+                         for t, d in v["por_tipo"].items()}
         }
         for v in coordenadas.values()
     ]
