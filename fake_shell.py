@@ -1,6 +1,9 @@
+import re
+import hashlib
 import paramiko
 import threading
-from datetime import datetime
+from weak_passwords import CLAVES_DEBILES
+from datetime import datetime, timedelta
 from shell_logger import save_command
 
 # Respuestas falsas para los comandos más comunes
@@ -89,7 +92,7 @@ TERM=xterm-256color""",
     "logout": "exit",
 }
 
-def get_response(comando, ip):
+def get_response(comando, ip, usuario="root"):
     """Devuelve la respuesta para un comando dado."""
     cmd = comando.strip()
     
@@ -113,14 +116,15 @@ def get_response(comando, ip):
             capturar_en_background(url, ip)
             
             nombre = url.rstrip("/").split("/")[-1] or "payload"
+            ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             return (
-                f"--2026-05-08 03:14:22-- {url}\n"
+                f"--{ahora}-- {url}\n"
                 f"Resolving {url.split('/')[2]}... connected.\n"
                 f"HTTP request sent, awaiting response... 200 OK\n"
                 f"Length: 4312 (4.2K) [text/plain]\n"
                 f"Saving to: '{nombre}'\n\n"
                 f"{nombre} 100%[==================>]   4.21K  --.-KB/s    in 0s\n\n"
-                f"2026-05-08 03:14:22 (--.- MB/s) - '{nombre}' saved [4312/4312]"
+                f"{ahora} (--.- MB/s) - '{nombre}' saved [4312/4312]"
             )
         else:
             save_command(ip, cmd, "ALERTA: Intento de descarga sin URL")
@@ -131,6 +135,25 @@ def get_response(comando, ip):
         save_command(ip, cmd, "ALERTA: Intento de modificación del sistema")
         return ""
     
+    # Respuestas que dependen del usuario con el que entro el atacante
+    if cmd == "whoami":
+        return usuario
+    if cmd == "id":
+        if usuario == "root":
+            return "uid=0(root) gid=0(root) groups=0(root)"
+        return f"uid=1000({usuario}) gid=1000({usuario}) groups=1000({usuario})"
+    if cmd == "pwd":
+        return "/root" if usuario == "root" else f"/home/{usuario}"
+
+    # Comandos internos de bash que no imprimen nada. Si faltaran, "cd /tmp" daria
+    # "command not found", que es lo primero que delata un honeypot.
+    primera = cmd.split()[0]
+    if primera in ("cd", "touch", "mkdir", "rm", "sleep", "export", "unset", "set",
+                   "source", "alias", "clear", "kill", "pkill", "nohup", "history -c"):
+        return ""
+    if primera == "echo":
+        return cmd[4:].strip().strip("\"'")
+
     # Buscar en el diccionario de respuestas
     if cmd in COMANDOS:
         return COMANDOS[cmd]
@@ -140,6 +163,31 @@ def get_response(comando, ip):
     return f"bash: {cmd_base}: command not found"
 
 
+# --- Autenticacion creible -------------------------------------------------
+# Un servidor real no deja pasar a la primera con cualquier clave. Aceptamos si:
+#  - la clave es una de las debiles tipicas, o
+#  - esa IP ya fallo INTENTOS_PARA_ACEPTAR - 1 veces en los ultimos 10 minutos.
+# Los intentos rechazados se registran igual (alimentan las reglas de Wazuh).
+INTENTOS_PARA_ACEPTAR = 3
+VENTANA_SEG = 600
+_fallos = {}
+_fallos_lock = threading.Lock()
+
+def _debe_aceptar(ip, password):
+    ahora = datetime.now().timestamp()
+    with _fallos_lock:
+        for k in [k for k, v in _fallos.items() if ahora - v[1] > VENTANA_SEG]:
+            del _fallos[k]
+        if password in CLAVES_DEBILES:
+            _fallos.pop(ip, None)
+            return True
+        n = _fallos.get(ip, (0, ahora))[0] + 1
+        if n >= INTENTOS_PARA_ACEPTAR:
+            _fallos.pop(ip, None)
+            return True
+        _fallos[ip] = (n, ahora)
+        return False
+
 class FakeShell(paramiko.ServerInterface):
     """Servidor SSH que acepta el login y abre una shell falsa."""
     
@@ -148,15 +196,15 @@ class FakeShell(paramiko.ServerInterface):
         self.event = threading.Event()
     
     def check_auth_password(self, username, password):
-        # Guardar el intento de login
+        # Guardar el intento de login (siempre, aunque se rechace)
         from logger import save_attempt
         save_attempt(self.client_ip, username, password)
-        
-        # Aceptar el login después de algunos intentos fallidos
-        # para que parezca más realista
+
         self.username = username
-        return paramiko.AUTH_SUCCESSFUL
-    
+        if _debe_aceptar(self.client_ip, password):
+            return paramiko.AUTH_SUCCESSFUL
+        return paramiko.AUTH_FAILED
+
     def get_allowed_auths(self, username):
         return "password"
     
@@ -173,9 +221,20 @@ class FakeShell(paramiko.ServerInterface):
         return True
 
 
+def _ultimo_login(client_ip):
+    """Un 'Last login' creible: fecha anterior e IP distinta a la del cliente actual.
+    Es determinista por IP, asi un atacante que reconecta ve siempre lo mismo."""
+    h = int(hashlib.md5(client_ip.encode()).hexdigest(), 16)
+    fecha = datetime.now() - timedelta(days=1 + h % 6, hours=(h >> 8) % 24, minutes=(h >> 16) % 60)
+    origen = f"10.0.{(h >> 24) % 250 + 1}.{(h >> 32) % 250 + 1}"
+    return fecha.strftime("%a %b %d %H:%M:%S %Y"), origen
+
 def manejar_shell(channel, client_ip, username):
     """Maneja la sesión interactiva de la shell falsa."""
-    prompt = f"root@ubuntu-server:~$ "
+    # El prompt usa el usuario con el que entro (el atacante lo ve coherente con whoami)
+    usuario = re.sub(r"[^A-Za-z0-9_.-]", "", str(username))[:32] or "user"
+    prompt = "root@ubuntu-server:~# " if usuario == "root" else f"{usuario}@ubuntu-server:~$ "
+    ultima_fecha, ultimo_origen = _ultimo_login(client_ip)
     
     # Mensaje de bienvenida — igual al de Ubuntu real
     bienvenida = f"""Welcome to Ubuntu 22.04.2 LTS (GNU/Linux 5.15.0-1034-aws x86_64)
@@ -184,9 +243,10 @@ def manejar_shell(channel, client_ip, username):
  * Management:     https://landscape.canonical.com
  * Support:        https://ubuntu.com/advantage
 
-Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from {client_ip}
+Last login: {ultima_fecha} from {ultimo_origen}
 """
-    channel.send(bienvenida.encode())
+    # Las terminales necesitan \r\n; con solo \n el texto sale escalonado
+    channel.send(bienvenida.replace("\n", "\r\n").encode())
     channel.send(prompt.encode())
     
     comando_actual = ""
@@ -210,7 +270,7 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from {client_ip}
                         save_command(client_ip, comando_actual.strip())
                         
                         # Obtener la respuesta
-                        respuesta = get_response(comando_actual.strip(), client_ip)
+                        respuesta = get_response(comando_actual.strip(), client_ip, usuario)
                         
                         # None significa que pidió exit
                         if respuesta is None:
@@ -219,7 +279,7 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from {client_ip}
                             return
                         
                         if respuesta:
-                            channel.send((respuesta + "\r\n").encode())
+                            channel.send((respuesta.replace("\r\n", "\n").replace("\n", "\r\n") + "\r\n").encode())
                     
                     comando_actual = ""
                     channel.send(prompt.encode())

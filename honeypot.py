@@ -1,3 +1,4 @@
+import os
 import socket
 import threading
 import paramiko
@@ -6,7 +7,24 @@ from config import HOST, PORT, BANNER, MAX_CONNECTIONS
 from stats import show_stats
 from fake_shell import FakeShell, manejar_shell
 
-host_key = paramiko.RSAKey.generate(2048)
+HOST_KEY_PATH = os.path.join("logs", "ssh_host_rsa_key")
+
+def cargar_host_key():
+    """Usa siempre la misma clave de host entre reinicios: un servidor real no la cambia
+    y los clientes que ya se conectaron lo notarian. Se guarda en logs/ (volumen),
+    asi sobrevive a los rebuilds del contenedor. logs/ esta en .gitignore."""
+    os.makedirs("logs", exist_ok=True)
+    if os.path.exists(HOST_KEY_PATH):
+        return paramiko.RSAKey(filename=HOST_KEY_PATH)
+    key = paramiko.RSAKey.generate(2048)
+    key.write_private_key_file(HOST_KEY_PATH)
+    try:
+        os.chmod(HOST_KEY_PATH, 0o600)
+    except OSError:
+        pass
+    return key
+
+host_key = cargar_host_key()
 
 def handle_connection(client_ip, client_socket):
     try:
