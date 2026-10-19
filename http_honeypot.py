@@ -4,7 +4,7 @@ import threading
 import json
 import os
 from datetime import datetime
-from config import HOST, HTTP_PORT, HTTP_LOG, GEO_ENABLED
+from config import HOST, HTTP_PORT, HTTP_LOG, GEO_ENABLED, es_ip_propia
 
 # Página de login falsa — parece un router o panel de admin real
 LOGIN_PAGE = """HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n
@@ -87,6 +87,9 @@ def _geo_http(ip):
 
 def save_http_attempt(ip, method, path, username=None, password=None, user_agent="", body=""):
     """Guarda un intento HTTP en el log."""
+    if es_ip_propia(ip):
+        print(f"[IGNORADO] request HTTP de IP propia ({ip})")
+        return
     os.makedirs("logs", exist_ok=True)
     
     geo = _geo_http(ip)

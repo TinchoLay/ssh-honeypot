@@ -3,7 +3,7 @@ import os
 import requests
 import threading
 from datetime import datetime
-from config import LOG_FILE, GEO_API_URL, GEO_ENABLED
+from config import LOG_FILE, GEO_API_URL, GEO_ENABLED, es_ip_propia
 from alertas import check_y_alertar
 from threat_intel import analizar_ip
 from ml_classifier import registrar_intento_ml, clasificar_atacante
@@ -55,6 +55,9 @@ def _consultar_geolocation(ip):
     }
 
 def save_attempt(ip, username, password):
+    if es_ip_propia(ip):
+        print(f"[IGNORADO] intento SSH de IP propia ({ip})")
+        return
     os.makedirs("logs", exist_ok=True)
 
     geo = get_geolocation(ip) if GEO_ENABLED else {

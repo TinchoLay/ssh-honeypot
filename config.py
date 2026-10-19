@@ -40,3 +40,34 @@ MALWARE_ENABLED = True
 VIRUSTOTAL_KEY = os.getenv("VIRUSTOTAL_KEY", "")
 MALWARE_DIR = "logs/malware_samples"
 MALWARE_LOG = "logs/malware_captures.json"
+
+# IPs propias (tuyas) que el honeypot NO registra: no se escriben en ningun log ni se
+# geolocalizan. Se define con la variable HONEYPOT_IGNORE_IPS, separada por comas, y admite
+# IPs sueltas o redes en notacion CIDR. Ej: HONEYPOT_IGNORE_IPS=203.0.113.5,198.51.100.0/24
+# Ojo: una red grande (un /24 de tu proveedor) tambien ignora a otros clientes del mismo
+# proveedor. Preferi IPs exactas.
+import ipaddress
+
+def _cargar_ips_ignoradas():
+    redes = []
+    for crudo in os.getenv("HONEYPOT_IGNORE_IPS", "").split(","):
+        crudo = crudo.strip()
+        if not crudo:
+            continue
+        try:
+            redes.append(ipaddress.ip_network(crudo, strict=False))
+        except ValueError:
+            print(f"[config] HONEYPOT_IGNORE_IPS: valor invalido ignorado: {crudo!r}")
+    return redes
+
+IGNORE_NETS = _cargar_ips_ignoradas()
+
+def es_ip_propia(ip):
+    """True si la IP esta en la lista de IPs propias a ignorar."""
+    if not IGNORE_NETS:
+        return False
+    try:
+        direccion = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(direccion in red for red in IGNORE_NETS)

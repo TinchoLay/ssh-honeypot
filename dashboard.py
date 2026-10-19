@@ -2,6 +2,7 @@ from flask import Flask, render_template, jsonify
 from flask_socketio import SocketIO
 import json
 import os
+import threading
 from collections import Counter
 from datetime import datetime
 from config import LOG_FILE, HTTP_LOG, FTP_LOG
@@ -143,6 +144,44 @@ def get_stats(attempts):
     }
 
 
+# ─── DATOS DEL MAPA (con filtros en el navegador) ─────────────────────────────
+
+TIPOS_MAPA = ["SSH", "HTTP", "FTP"]
+EDAD_DESCONOCIDA = 10**10   # eventos con timestamp ilegible: solo entran en "desde el inicio"
+
+def get_map_data(attempts):
+    """Datos compactos para filtrar el mapa en el navegador por tipo y por periodo.
+
+    Cada evento es [indice_ubicacion, indice_tipo, edad_en_segundos, indice_ip]. Se manda la
+    edad ya calculada (ahora - timestamp con el mismo reloj del contenedor), asi no importa en
+    que zona horaria estan los logs. Las IPs viajan como indices: sirven para contar IPs unicas
+    sin exponer la lista."""
+    ahora = datetime.now()
+    indice_loc, locs = {}, []
+    indice_ip, eventos = {}, []
+
+    for a in attempts:
+        lat, lon = a.get("lat"), a.get("lon")
+        tipo = a.get("tipo")
+        if lat is None or lon is None or tipo not in TIPOS_MAPA:
+            continue
+        clave = (a.get("country", "?"), a.get("city", "?"))
+        if clave not in indice_loc:
+            indice_loc[clave] = len(locs)
+            locs.append({"lat": lat, "lon": lon, "country": clave[0], "city": clave[1]})
+        ip = a.get("ip", "")
+        if ip not in indice_ip:
+            indice_ip[ip] = len(indice_ip)
+        try:
+            edad = int((ahora - datetime.strptime(a.get("timestamp", ""), "%Y-%m-%d %H:%M:%S")).total_seconds())
+            edad = max(edad, 0)
+        except (ValueError, TypeError):
+            edad = EDAD_DESCONOCIDA
+        eventos.append([indice_loc[clave], TIPOS_MAPA.index(tipo), edad, indice_ip[ip]])
+
+    return {"locs": locs, "events": eventos}
+
+
 # ─── ANÁLISIS TEMPORAL ────────────────────────────────────────────────────────
 
 def get_analisis_data(attempts):
@@ -222,6 +261,11 @@ def api_stats():
     stats = get_stats(attempts)
     return jsonify(stats)
 
+@app.route("/api/mapa")
+def api_mapa():
+    """Eventos compactos para el mapa con filtros (se pide solo al abrir la pestana Mapa)."""
+    return jsonify(get_map_data(load_all_attempts()))
+
 @app.route("/api/analisis")
 def api_analisis():
     """Endpoint JSON para auto-refresh del análisis."""
@@ -246,11 +290,29 @@ def on_connect():
     stats = get_stats(attempts)
     socketio.emit("update", stats)
 
-def notify_new_attempt(attempt):
-    """Llamar desde logger.py, http_honeypot.py y ftp_honeypot.py."""
+_notify_lock = threading.Lock()
+_notify_pendiente = False
+
+def _emitir_update():
+    global _notify_pendiente
+    with _notify_lock:
+        _notify_pendiente = False
     attempts = load_all_attempts()
     stats = get_stats(attempts)
     socketio.emit("update", stats)
+
+def notify_new_attempt(attempt):
+    """Llamar desde logger.py, http_honeypot.py y ftp_honeypot.py.
+
+    Cada aviso releia todos los logs y reenviaba todo. Con el puerto 22 abierto llegan
+    muchos eventos por segundo y eso crece de forma cuadratica, asi que se agrupan: como
+    mucho una actualizacion cada ~1.5 segundos, que siempre refleja el ultimo estado."""
+    global _notify_pendiente
+    with _notify_lock:
+        if _notify_pendiente:
+            return
+        _notify_pendiente = True
+    threading.Timer(1.5, _emitir_update).start()
 
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────

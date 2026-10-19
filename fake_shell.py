@@ -1,5 +1,6 @@
 import re
 import hashlib
+import posixpath
 import paramiko
 import threading
 from weak_passwords import CLAVES_DEBILES
@@ -92,9 +93,114 @@ TERM=xterm-256color""",
     "logout": "exit",
 }
 
-def get_response(comando, ip, usuario="root"):
+# --- Sistema de archivos falso -------------------------------------------------
+# La shell recuerda en que carpeta esta el atacante, asi cd, pwd, ls y el prompt
+# son coherentes entre si. Un "ls" en el home que lista la raiz delataba al honeypot.
+DIRS_CONOCIDOS = {"/", "/bin", "/boot", "/dev", "/dev/shm", "/etc", "/home", "/lib",
+                  "/media", "/mnt", "/opt", "/proc", "/root", "/run", "/sbin", "/srv",
+                  "/sys", "/tmp", "/usr", "/usr/bin", "/usr/local", "/usr/share",
+                  "/var", "/var/log", "/var/run", "/var/tmp", "/var/www"}
+
+LISTADOS = {
+    "/": "bin boot dev etc home lib media mnt opt proc root run sbin srv sys tmp usr var".split(),
+    "/etc": ("apt bash.bashrc cron.d crontab fstab group hostname hosts issue motd "
+             "os-release passwd profile resolv.conf shadow ssh sudoers").split(),
+    "/var": "backups cache lib local lock log mail opt run spool tmp".split(),
+    "/var/log": ("alternatives.log apt auth.log btmp cloud-init.log dpkg.log "
+                 "kern.log lastlog syslog wtmp").split(),
+    "/usr": "bin games include lib local sbin share src".split(),
+}
+
+TAMANOS_DOTFILES = {".bash_logout": 220, ".bashrc": 3771, ".profile": 807}
+
+def _home(usuario):
+    return "/root" if usuario == "root" else f"/home/{usuario}"
+
+def _resolver(cwd, destino, usuario):
+    home = _home(usuario)
+    if not destino or destino == "~":
+        ruta = home
+    elif destino.startswith("~/"):
+        ruta = home + destino[1:]
+    elif destino.startswith("/"):
+        ruta = destino
+    else:
+        ruta = posixpath.join(cwd, destino)
+    return posixpath.normpath(ruta)
+
+def _dir_existe(ruta, usuario):
+    return ruta in DIRS_CONOCIDOS or ruta == _home(usuario)
+
+def _nombres_dir(ruta, usuario):
+    if ruta == "/home":
+        nombres = ["ubuntu"]
+        if usuario not in ("root", "ubuntu"):
+            nombres.append(usuario)
+        return sorted(nombres)
+    return list(LISTADOS.get(ruta, []))
+
+def _ls(argumentos, cwd, usuario):
+    flags = "".join(a[1:] for a in argumentos if a.startswith("-"))
+    destinos = [a for a in argumentos if not a.startswith("-")]
+    ruta = _resolver(cwd, destinos[0], usuario) if destinos else cwd
+    if not _dir_existe(ruta, usuario):
+        return f"ls: cannot access '{destinos[0] if destinos else ruta}': No such file or directory"
+    if ruta == "/root" and usuario != "root":
+        return "ls: cannot open directory '/root': Permission denied"
+
+    es_home = ruta == _home(usuario)
+    nombres = _nombres_dir(ruta, usuario)
+    if es_home:
+        ocultos = [".bashrc", ".profile"] if usuario == "root" else \
+                  [".bash_logout", ".bashrc", ".cache", ".profile"]
+    else:
+        ocultos = []
+
+    if "l" not in flags:
+        visibles = (ocultos if "a" in flags else []) + nombres
+        return "  ".join(sorted(visibles, key=lambda n: n.lower().lstrip(".")))
+
+    dueno = usuario if es_home else "root"
+    entradas = []
+    if "a" in flags:
+        entradas += [".", ".."] + ocultos
+    entradas += nombres
+    lineas = [f"total {4 * max(len(entradas), 1)}"]
+    for n in sorted(entradas, key=lambda x: (x not in (".", ".."), x.lower().lstrip("."))):
+        if n in (".", ".."):
+            es_dir, perm = True, ("drwxr-x---" if es_home and n == "." else "drwxr-xr-x")
+            propietario = dueno if n == "." else "root"
+        elif n == ".cache":
+            es_dir, perm, propietario = True, "drwx------", dueno
+        elif n in TAMANOS_DOTFILES:
+            es_dir, perm, propietario = False, "-rw-r--r--", dueno
+        else:
+            es_dir = "." not in n
+            perm = "drwxr-xr-x" if es_dir else "-rw-r--r--"
+            propietario = dueno
+        tam = 4096 if es_dir else TAMANOS_DOTFILES.get(n, 300 + (len(n) * 137) % 4000)
+        enlaces = 2 if es_dir else 1
+        lineas.append(f"{perm} {enlaces:>2} {propietario} {propietario} {tam:>5} Apr 27 03:14 {n}")
+    return "\n".join(lineas)
+
+def _prompt(usuario, estado):
+    home = _home(usuario)
+    cwd = estado["cwd"]
+    if cwd == home:
+        d = "~"
+    elif cwd.startswith(home + "/"):
+        d = "~" + cwd[len(home):]
+    else:
+        d = cwd
+    simbolo = "#" if usuario == "root" else "$"
+    return f"{usuario}@ubuntu-server:{d}{simbolo} "
+
+
+def get_response(comando, ip, usuario="root", estado=None):
     """Devuelve la respuesta para un comando dado."""
     cmd = comando.strip()
+    if estado is None:
+        estado = {"cwd": _home(usuario)}
     
     # Comandos de salida
     if cmd in ["exit", "logout", "quit"]:
@@ -143,11 +249,24 @@ def get_response(comando, ip, usuario="root"):
             return "uid=0(root) gid=0(root) groups=0(root)"
         return f"uid=1000({usuario}) gid=1000({usuario}) groups=1000({usuario})"
     if cmd == "pwd":
-        return "/root" if usuario == "root" else f"/home/{usuario}"
+        return estado["cwd"]
 
     # Comandos internos de bash que no imprimen nada. Si faltaran, "cd /tmp" daria
     # "command not found", que es lo primero que delata un honeypot.
     primera = cmd.split()[0]
+    simple = not any(m in cmd for m in (";", "&&", "||", "|", ">", "<", "`", "$("))
+    if primera == "cd" and simple:
+        args = cmd.split()[1:]
+        destino = args[0] if args else ""
+        ruta = _resolver(estado["cwd"], destino, usuario)
+        if ruta == "/root" and usuario != "root":
+            return "bash: cd: /root: Permission denied"
+        if _dir_existe(ruta, usuario):
+            estado["cwd"] = ruta
+            return ""
+        return f"bash: cd: {destino}: No such file or directory"
+    if primera == "ls" and simple:
+        return _ls(cmd.split()[1:], estado["cwd"], usuario)
     if primera in ("cd", "touch", "mkdir", "rm", "sleep", "export", "unset", "set",
                    "source", "alias", "clear", "kill", "pkill", "nohup", "history -c"):
         return ""
@@ -233,7 +352,8 @@ def manejar_shell(channel, client_ip, username):
     """Maneja la sesión interactiva de la shell falsa."""
     # El prompt usa el usuario con el que entro (el atacante lo ve coherente con whoami)
     usuario = re.sub(r"[^A-Za-z0-9_.-]", "", str(username))[:32] or "user"
-    prompt = "root@ubuntu-server:~# " if usuario == "root" else f"{usuario}@ubuntu-server:~$ "
+    estado = {"cwd": _home(usuario)}
+    prompt = _prompt(usuario, estado)
     ultima_fecha, ultimo_origen = _ultimo_login(client_ip)
     
     # Mensaje de bienvenida — igual al de Ubuntu real
@@ -270,7 +390,7 @@ Last login: {ultima_fecha} from {ultimo_origen}
                         save_command(client_ip, comando_actual.strip())
                         
                         # Obtener la respuesta
-                        respuesta = get_response(comando_actual.strip(), client_ip, usuario)
+                        respuesta = get_response(comando_actual.strip(), client_ip, usuario, estado)
                         
                         # None significa que pidió exit
                         if respuesta is None:
@@ -282,6 +402,7 @@ Last login: {ultima_fecha} from {ultimo_origen}
                             channel.send((respuesta.replace("\r\n", "\n").replace("\n", "\r\n") + "\r\n").encode())
                     
                     comando_actual = ""
+                    prompt = _prompt(usuario, estado)
                     channel.send(prompt.encode())
                 
                 # Backspace

@@ -3,7 +3,7 @@ import threading
 import json
 import os
 from datetime import datetime
-from config import HOST, FTP_PORT, FTP_LOG
+from config import HOST, FTP_PORT, FTP_LOG, GEO_ENABLED, es_ip_propia
 
 # Respuestas FTP estándar — el protocolo FTP usa códigos numéricos
 # igual que HTTP. Estos son los mensajes reales que manda un servidor FTP.
@@ -14,16 +14,37 @@ RESP_OK    = "230 User {user} logged in.\r\n"  # Nunca se usa, siempre falla
 RESP_QUIT  = "221 Goodbye.\r\n"
 RESP_UNKNOWN = "500 Unknown command.\r\n"
 
+def _geo_ftp(ip):
+    """Geolocaliza con la misma funcion (y cache) que SSH y HTTP."""
+    sin_geo = {"country": "-", "city": "-", "isp": "-", "lat": None, "lon": None}
+    if not GEO_ENABLED:
+        return sin_geo
+    try:
+        from logger import get_geolocation
+        return get_geolocation(ip)
+    except Exception:
+        return sin_geo
+
 def save_ftp_attempt(ip, username, password):
     """Guarda un intento FTP en el log."""
+    if es_ip_propia(ip):
+        print(f"[IGNORADO] login FTP de IP propia ({ip})")
+        return
     os.makedirs("logs", exist_ok=True)
-    
+
+    geo = _geo_ftp(ip)
+
     attempt = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "honeypot_event": "ftp_login_attempt",
         "ip": ip,
         "username": username,
-        "password": password
+        "password": password,
+        "country": geo["country"],
+        "city": geo["city"],
+        "isp": geo["isp"],
+        "lat": geo["lat"],
+        "lon": geo["lon"]
     }
     
     with open(FTP_LOG, "a") as f:

@@ -103,13 +103,20 @@
         canvas { max-height: 260px; }
 
         /* ── MAPA ── */
+        .map-filtros { display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center; margin: 0 0 12px; }
+        .map-filtros .grupo { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+        .map-filtros .grupo > span { color: #8b949e; font-size: 12px; margin-right: 2px; }
+        .fbtn { padding: 5px 12px; border: 1px solid #30363d; border-radius: 6px; background: transparent;
+                color: #8b949e; font-family: inherit; font-size: 12px; cursor: pointer; }
+        .fbtn:hover { color: #e6edf3; border-color: #58a6ff; }
+        .fbtn.active { color: #58a6ff; border-color: #58a6ff; background: rgba(88,166,255,0.08); }
         #map-container { position: relative; }
         .tiles-oscuros { filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.6); }
-        #map { width: 100%; height: calc(100vh - 200px); min-height: 400px; border-radius: 8px; border: 1px solid #30363d; }
+        #map { width: 100%; height: calc(100vh - 260px); min-height: 400px; border-radius: 8px; border: 1px solid #30363d; }
         .map-stats {
             position: absolute;
             top: 12px;
-            left: 12px;
+            right: 12px;
             z-index: 1000;
             background: rgba(13,17,23,0.92);
             border: 1px solid #1e3a5f;
@@ -252,6 +259,23 @@
 
 <!-- ══════════════ TAB: MAPA ══════════════ -->
 <div id="tab-mapa" class="section">
+    <div class="map-filtros">
+        <div class="grupo"><span>Tipo</span>
+            <button class="fbtn active" data-grupo="tipo" data-valor="TODOS">Todos</button>
+            <button class="fbtn" data-grupo="tipo" data-valor="SSH">SSH</button>
+            <button class="fbtn" data-grupo="tipo" data-valor="HTTP">HTTP</button>
+            <button class="fbtn" data-grupo="tipo" data-valor="FTP">FTP</button>
+        </div>
+        <div class="grupo"><span>Período</span>
+            <button class="fbtn" data-grupo="tiempo" data-valor="1H">Última hora</button>
+            <button class="fbtn" data-grupo="tiempo" data-valor="24H">Últimas 24 hs</button>
+            <button class="fbtn" data-grupo="tiempo" data-valor="3D">Últimos 3 días</button>
+            <button class="fbtn" data-grupo="tiempo" data-valor="7D">Última semana</button>
+            <button class="fbtn" data-grupo="tiempo" data-valor="30D">Último mes</button>
+            <button class="fbtn active" data-grupo="tiempo" data-valor="TODO">Desde el inicio</button>
+        </div>
+        <button class="fbtn" id="map-refrescar">↻ Actualizar</button>
+    </div>
     <div id="map-container">
         <div id="map"></div>
     </div>
@@ -275,8 +299,13 @@ function switchTab(name) {
     if (name === 'analisis' && !analisisLoaded) {
         cargarAnalisis();
     }
-    if (name === 'mapa' && !mapaLoaded) {
-        cargarMapa();
+    if (name === 'mapa') {
+        if (!mapaLoaded) {
+            cargarMapa();
+        } else {
+            cargarDatosMapa();
+            mapaInstance.invalidateSize();
+        }
     }
 }
 
@@ -430,6 +459,78 @@ function cargarAnalisis() {
 }
 
 // ── MAPA: carga lazy cuando abrís el tab ─────────────────────
+// Filtros combinables: tipo (Todos/SSH/HTTP/FTP) Y período (1 h ... desde el inicio).
+const TIPOS_MAPA = ['SSH', 'HTTP', 'FTP'];
+const VENTANAS_MAPA = { '1H': 3600, '24H': 86400, '3D': 259200, '7D': 604800, '30D': 2592000, 'TODO': Infinity };
+let mapaFiltroTipo = 'TODOS';
+let mapaFiltroTiempo = 'TODO';
+let mapaData = null;      // {locs: [...], events: [[loc, tipo, edad_seg, ip], ...]}
+let mapaCapa = null;
+let mapaStatsDiv = null;
+
+function marcarFiltrosMapa() {
+    document.querySelectorAll('.fbtn[data-grupo]').forEach(b => {
+        const actual = b.dataset.grupo === 'tipo' ? mapaFiltroTipo : mapaFiltroTiempo;
+        b.classList.toggle('active', actual === b.dataset.valor);
+    });
+}
+
+function dibujarMapa() {
+    if (!mapaInstance || !mapaData || !mapaCapa) return;
+    mapaCapa.clearLayers();
+
+    const tipos = mapaFiltroTipo === 'TODOS' ? TIPOS_MAPA : [mapaFiltroTipo];
+    const ventana = VENTANAS_MAPA[mapaFiltroTiempo];
+    const porLoc = {};
+    const ipsTotales = new Set();
+    let totalAtaques = 0;
+
+    mapaData.events.forEach(ev => {
+        const tipo = TIPOS_MAPA[ev[1]];
+        if (!tipos.includes(tipo) || ev[2] > ventana) return;
+        const p = porLoc[ev[0]] || (porLoc[ev[0]] = { conteo: {}, ips: new Set() });
+        p.conteo[tipo] = (p.conteo[tipo] || 0) + 1;
+        p.ips.add(ev[3]);
+        ipsTotales.add(ev[3]);
+        totalAtaques++;
+    });
+
+    const claves = Object.keys(porLoc);
+    claves.forEach(k => {
+        const loc = mapaData.locs[k];
+        const p = porLoc[k];
+        const count = Object.values(p.conteo).reduce((a, b) => a + b, 0);
+        const detalle = TIPOS_MAPA.filter(t => p.conteo[t]).map(t => `${t}: <b>${p.conteo[t]}</b>`).join(' · ');
+
+        const circle = L.circleMarker([loc.lat, loc.lon], {
+            radius: Math.min(6 + (count * 2.5), 45),
+            color: '#FF2222', weight: 1.5, fill: true, fillColor: '#FF0000',
+            fillOpacity: Math.min(0.4 + (count / 20), 0.85)
+        }).addTo(mapaCapa);
+
+        const html = `
+            <div style="font-family:monospace;font-size:12px;line-height:1.6">
+                <b>${esc(loc.country)}</b> — ${esc(loc.city)}<br>
+                Ataques: <b>${count}</b> (${detalle})<br>
+                IPs únicas: <b>${p.ips.size}</b>
+            </div>`;
+        circle.bindTooltip(html, { sticky: true });
+        circle.bindPopup(html);
+    });
+
+    mapaStatsDiv.innerHTML = `
+        <div><div class="num">${totalAtaques}</div><div class="lbl">ataques en mapa</div></div>
+        <div style="margin-top:8px"><div class="num">${ipsTotales.size}</div><div class="lbl">IPs únicas</div></div>
+        <div style="margin-top:8px"><div class="num">${claves.length}</div><div class="lbl">regiones</div></div>
+    `;
+}
+
+function cargarDatosMapa() {
+    return fetch('/api/mapa')
+        .then(r => r.json())
+        .then(d => { mapaData = d; dibujarMapa(); });
+}
+
 function cargarMapa() {
     // Leaflet necesita que el contenedor sea visible antes de inicializar
     setTimeout(() => {
@@ -460,78 +561,22 @@ function cargarMapa() {
         };
         legend.addTo(mapaInstance);
 
-        // Filtro de tipo de ataque (Todos / SSH / HTTP / FTP)
-        const filtro = L.control({ position: 'topright' });
-        filtro.onAdd = () => {
-            const div = L.DomUtil.create('div', 'legend');
-            div.innerHTML = ['TODOS', 'SSH', 'HTTP', 'FTP'].map(t =>
-                `<button class="map-filtro" data-tipo="${t}" style="margin:2px;padding:3px 8px;cursor:pointer;background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;font-family:monospace">${t === 'TODOS' ? 'Todos' : t}</button>`
-            ).join('');
-            L.DomEvent.disableClickPropagation(div);
-            return div;
-        };
-        filtro.addTo(mapaInstance);
+        mapaCapa = L.layerGroup().addTo(mapaInstance);
+        mapaStatsDiv = document.createElement('div');
+        mapaStatsDiv.className = 'map-stats';
+        document.getElementById('map-container').appendChild(mapaStatsDiv);
 
-        const capa = L.layerGroup().addTo(mapaInstance);
-        let puntosMapa = [];
+        document.querySelectorAll('.fbtn[data-grupo]').forEach(b =>
+            b.addEventListener('click', () => {
+                if (b.dataset.grupo === 'tipo') mapaFiltroTipo = b.dataset.valor;
+                else mapaFiltroTiempo = b.dataset.valor;
+                marcarFiltrosMapa();
+                dibujarMapa();
+            }));
+        document.getElementById('map-refrescar').addEventListener('click', cargarDatosMapa);
 
-        const statsDiv = document.createElement('div');
-        statsDiv.className = 'map-stats';
-        document.getElementById('map-container').appendChild(statsDiv);
-
-        function dibujarMapa(tipoSel) {
-            capa.clearLayers();
-            let totalAtaques = 0, regiones = 0;
-            const tipos = tipoSel === 'TODOS' ? ['SSH', 'HTTP', 'FTP'] : [tipoSel];
-
-            puntosMapa.forEach(p => {
-                let count = 0, ips = 0;
-                const detalle = [];
-                tipos.forEach(t => {
-                    const d = (p.por_tipo || {})[t];
-                    if (d) { count += d.count; ips += d.ips; detalle.push(`${t}: <b>${d.count}</b>`); }
-                });
-                if (!count) return;
-                regiones++;
-                totalAtaques += count;
-
-                const radio = Math.min(6 + (count * 2.5), 45);
-                const opacity = Math.min(0.4 + (count / 20), 0.85);
-                const circle = L.circleMarker([p.lat, p.lon], {
-                    radius: radio, color: '#FF2222', weight: 1.5,
-                    fill: true, fillColor: '#FF0000', fillOpacity: opacity
-                }).addTo(capa);
-
-                const html = `
-                    <div style="font-family:monospace;font-size:12px;line-height:1.6">
-                        <b>${esc(p.country)}</b> — ${esc(p.city)}<br>
-                        Ataques: <b>${count}</b> (${detalle.join(' · ')})<br>
-                        IPs: <b>${ips}</b>
-                    </div>`;
-                circle.bindTooltip(html, { sticky: true });
-                circle.bindPopup(html);
-            });
-
-            statsDiv.innerHTML = `
-                <div><div class="num">${totalAtaques}</div><div class="lbl">ataques en mapa</div></div>
-                <div style="margin-top:8px"><div class="num">${regiones}</div><div class="lbl">regiones</div></div>
-            `;
-            document.querySelectorAll('.map-filtro').forEach(b => {
-                b.style.borderColor = b.dataset.tipo === tipoSel ? '#58a6ff' : '#30363d';
-            });
-        }
-
-        document.querySelectorAll('.map-filtro').forEach(b =>
-            b.addEventListener('click', () => dibujarMapa(b.dataset.tipo)));
-
-        // Cargar puntos desde la API
-        fetch('/api/stats')
-            .then(r => r.json())
-            .then(stats => {
-                puntosMapa = stats.map_points || [];
-                dibujarMapa('TODOS');
-            });
-
+        marcarFiltrosMapa();
+        cargarDatosMapa();
         mapaLoaded = true;
     }, 100);
 }
