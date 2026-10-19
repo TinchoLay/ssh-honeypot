@@ -1,11 +1,20 @@
+import logging
 import os
 import socket
 import threading
+import time
 import paramiko
 from logger import save_attempt
+from connection_logger import save_connection
 from config import HOST, PORT, BANNER, MAX_CONNECTIONS
 from stats import show_stats
 from fake_shell import FakeShell, manejar_shell
+
+# Un scanner que corta la conexion antes del banner hace que paramiko imprima un traceback
+# entero. Esos errores ya quedan registrados como evento en ssh_connections.json, asi que se
+# silencia el logger para no llenar el log del contenedor. Tambien oculta otros errores del
+# transporte: si hay que depurar paramiko, comentar esta linea.
+logging.getLogger("paramiko.transport").setLevel(logging.CRITICAL)
 
 HOST_KEY_PATH = os.path.join("logs", "ssh_host_rsa_key")
 
@@ -27,13 +36,19 @@ def cargar_host_key():
 host_key = cargar_host_key()
 
 def handle_connection(client_ip, client_socket):
+    inicio = time.time()
+    server = FakeShell(client_ip)
+    transport = None
+    etapa = "negociacion"
+    resultado = "sin_autenticacion"
+    detalle = None
     try:
         transport = paramiko.Transport(client_socket)
         transport.local_version = BANNER
         transport.add_server_key(host_key)
 
-        server = FakeShell(client_ip)
         transport.start_server(server=server)
+        etapa = "sesion"
 
         try:
             from fingerprint import registrar_banner
@@ -45,18 +60,37 @@ def handle_connection(client_ip, client_socket):
 
         channel = transport.accept(20)
         if channel is None:
+            if server.autenticado:
+                resultado = "autenticado_sin_shell"
+            elif server.intentos:
+                resultado = "login_fallido"
             return
 
         server.event.wait(10)
         if not server.event.is_set():
+            resultado = "autenticado_sin_shell"
             return
 
+        resultado = "shell"
         username = getattr(server, "username", "unknown")
         manejar_shell(channel, client_ip, username)
 
-    except Exception:
-        pass
+    except Exception as e:
+        if etapa == "negociacion":
+            # La conexion murio antes de terminar el saludo SSH. Si el cliente nunca mando
+            # un banner SSH valido (corto sin hablar, o mando otra cosa), es "sin_banner"
+            recibio_banner = bool(getattr(transport, "remote_version", ""))
+            resultado = "error_protocolo" if recibio_banner else "sin_banner"
+            detalle = str(e) or type(e).__name__
     finally:
+        banner = getattr(transport, "remote_version", None) if transport else None
+        save_connection(client_ip, resultado, banner=banner,
+                        duracion=time.time() - inicio, intentos=server.intentos, detalle=detalle)
+        try:
+            if transport:
+                transport.close()
+        except Exception:
+            pass
         client_socket.close()
 
 def start_dashboard():

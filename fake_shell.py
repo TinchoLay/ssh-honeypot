@@ -313,6 +313,8 @@ class FakeShell(paramiko.ServerInterface):
     def __init__(self, client_ip):
         self.client_ip = client_ip
         self.event = threading.Event()
+        self.intentos = 0
+        self.autenticado = False
     
     def check_auth_password(self, username, password):
         # Guardar el intento de login (siempre, aunque se rechace)
@@ -320,7 +322,9 @@ class FakeShell(paramiko.ServerInterface):
         save_attempt(self.client_ip, username, password)
 
         self.username = username
+        self.intentos += 1
         if _debe_aceptar(self.client_ip, password):
+            self.autenticado = True
             return paramiko.AUTH_SUCCESSFUL
         return paramiko.AUTH_FAILED
 

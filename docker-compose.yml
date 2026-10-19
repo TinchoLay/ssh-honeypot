@@ -20,4 +20,10 @@ services:
       - VIRUSTOTAL_KEY=${VIRUSTOTAL_KEY:-}
       # IPs propias a ignorar (se define en .env, fuera de git). Ej: 203.0.113.5,198.51.100.7
       - HONEYPOT_IGNORE_IPS=${HONEYPOT_IGNORE_IPS:-}
+    # Docker no rota los logs por defecto: con trafico real el archivo crece sin limite
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped    # Se reinicia automáticamente si falla
