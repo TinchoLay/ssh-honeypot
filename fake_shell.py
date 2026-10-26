@@ -216,7 +216,7 @@ def get_response(comando, ip, usuario="root", estado=None):
         url = next((p for p in partes if p.startswith("http")), None)
         
         if url:
-            save_command(ip, cmd, f"ALERTA: Intento de descarga de {url}")
+            save_command(ip, cmd, f"ALERTA: Intento de descarga de {url}", canal=estado.get("canal", "shell"))
             # Capturar el malware en background
             from malware_capture import capturar_en_background
             capturar_en_background(url, ip)
@@ -233,12 +233,12 @@ def get_response(comando, ip, usuario="root", estado=None):
                 f"{ahora} (--.- MB/s) - '{nombre}' saved [4312/4312]"
             )
         else:
-            save_command(ip, cmd, "ALERTA: Intento de descarga sin URL")
+            save_command(ip, cmd, "ALERTA: Intento de descarga sin URL", canal=estado.get("canal", "shell"))
             return "wget: missing URL"
     
     # Detectar comandos de modificación del sistema
     if any(x in cmd for x in ["chmod", "chown", "useradd", "userdel", "passwd", "crontab -e"]):
-        save_command(ip, cmd, "ALERTA: Intento de modificación del sistema")
+        save_command(ip, cmd, "ALERTA: Intento de modificación del sistema", canal=estado.get("canal", "shell"))
         return ""
     
     # Respuestas que dependen del usuario con el que entro el atacante
@@ -268,9 +268,13 @@ def get_response(comando, ip, usuario="root", estado=None):
     if primera == "ls" and simple:
         return _ls(cmd.split()[1:], estado["cwd"], usuario)
     if primera in ("cd", "touch", "mkdir", "rm", "sleep", "export", "unset", "set",
-                   "source", "alias", "clear", "kill", "pkill", "nohup", "history -c"):
+                   "source", "alias", "clear", "kill", "pkill", "nohup", "history -c",
+                   "chattr"):
         return ""
     if primera == "echo":
+        # Con redireccion o pipe el texto no sale por pantalla (echo "ssh-rsa ..." >> authorized_keys)
+        if ">" in cmd or "|" in cmd:
+            return ""
         return cmd[4:].strip().strip("\"'")
 
     # Buscar en el diccionario de respuestas
@@ -279,6 +283,9 @@ def get_response(comando, ip, usuario="root", estado=None):
     
     # Comando no reconocido — simular error de bash
     cmd_base = cmd.split()[0] if cmd.split() else cmd
+    # Un binario con ruta ("./x.sh", "/tmp/x") que no existe da otro mensaje en bash
+    if cmd_base.startswith(("./", "/")):
+        return f"bash: {cmd_base}: No such file or directory"
     return f"bash: {cmd_base}: command not found"
 
 
@@ -315,7 +322,8 @@ class FakeShell(paramiko.ServerInterface):
         self.event = threading.Event()
         self.intentos = 0
         self.autenticado = False
-    
+        self.exec_command = None
+
     def check_auth_password(self, username, password):
         # Guardar el intento de login (siempre, aunque se rechace)
         from logger import save_attempt
@@ -340,6 +348,16 @@ class FakeShell(paramiko.ServerInterface):
         self.event.set()
         return True
     
+    def check_channel_exec_request(self, channel, command):
+        # Comando directo (ssh host "uname -a"), sin sesion interactiva. Es lo que usan
+        # los bots: autentican, mandan un comando y se van. Sin este metodo paramiko
+        # lo rechaza y ese comando no queda registrado.
+        if isinstance(command, bytes):
+            command = command.decode("utf-8", errors="replace")
+        self.exec_command = command
+        self.event.set()
+        return True
+
     def check_channel_pty_request(self, channel, term, width, height, pixelwidth, pixelheight, modes):
         return True
 
@@ -351,6 +369,51 @@ def _ultimo_login(client_ip):
     fecha = datetime.now() - timedelta(days=1 + h % 6, hours=(h >> 8) % 24, minutes=(h >> 16) % 60)
     origen = f"10.0.{(h >> 24) % 250 + 1}.{(h >> 32) % 250 + 1}"
     return fecha.strftime("%a %b %d %H:%M:%S %Y"), origen
+
+MAX_EXEC_LARGO = 4096   # caracteres que se procesan de un comando exec
+MAX_EXEC_PARTES = 20    # cuantos comandos encadenados se ejecutan
+
+def _partes_exec(comando):
+    """Parte "cd ~; uname -a && whoami" en comandos sueltos. Es una aproximacion: no
+    entiende comillas ni pipes (un ; dentro de un echo "a;b" tambien se parte)."""
+    return [p.strip() for p in re.split(r";|&&|\n", comando) if p.strip()][:MAX_EXEC_PARTES]
+
+def manejar_exec(channel, client_ip, username, comando):
+    """Responde a un comando directo (canal exec): ejecuta cada parte con el mismo
+    interprete falso que la shell interactiva, devuelve la salida y cierra el canal."""
+    usuario = re.sub(r"[^A-Za-z0-9_.-]", "", str(username))[:32] or "user"
+    comando = comando[:MAX_EXEC_LARGO]
+    estado = {"cwd": _home(usuario), "canal": "exec"}
+
+    # Se guarda el comando entero una vez, tal cual llego
+    save_command(client_ip, comando, "Comando por canal exec", canal="exec")
+
+    salida = []
+    codigo = 0
+    for parte in _partes_exec(comando):
+        respuesta = get_response(parte, client_ip, usuario, estado)
+        if respuesta is None:  # exit
+            break
+        if respuesta.startswith("bash: ") and respuesta.endswith("command not found"):
+            codigo = 127
+        elif respuesta.startswith(("bash: ./", "bash: /")):
+            codigo = 127    # binario con ruta que no existe
+        elif respuesta.startswith("bash: "):
+            codigo = 1      # otros errores (cd a un directorio inexistente, permisos)
+        else:
+            codigo = 0
+        if respuesta:
+            salida.append(respuesta)
+
+    try:
+        if salida:
+            # Sin pty las salidas terminan en \n (no \r\n)
+            channel.send(("\n".join(salida).replace("\r\n", "\n") + "\n").encode())
+        channel.send_exit_status(codigo)
+    except Exception:
+        pass
+    finally:
+        channel.close()
 
 def manejar_shell(channel, client_ip, username):
     """Maneja la sesión interactiva de la shell falsa."""
@@ -423,4 +486,4 @@ Last login: {ultima_fecha} from {ultimo_origen}
         except Exception:
             break
     
-    channel.close()
+    channel.close()

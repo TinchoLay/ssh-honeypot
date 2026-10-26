@@ -8,7 +8,7 @@ from logger import save_attempt
 from connection_logger import save_connection
 from config import HOST, PORT, BANNER, MAX_CONNECTIONS
 from stats import show_stats
-from fake_shell import FakeShell, manejar_shell
+from fake_shell import FakeShell, manejar_shell, manejar_exec
 
 # Un scanner que corta la conexion antes del banner hace que paramiko imprima un traceback
 # entero. Esos errores ya quedan registrados como evento en ssh_connections.json, asi que se
@@ -71,9 +71,15 @@ def handle_connection(client_ip, client_socket):
             resultado = "autenticado_sin_shell"
             return
 
-        resultado = "shell"
         username = getattr(server, "username", "unknown")
-        manejar_shell(channel, client_ip, username)
+        if server.exec_command is not None:
+            # Comando directo (ssh host "cmd"): es lo que hacen la mayoria de los bots
+            resultado = "exec"
+            detalle = server.exec_command
+            manejar_exec(channel, client_ip, username, server.exec_command)
+        else:
+            resultado = "shell"
+            manejar_shell(channel, client_ip, username)
 
     except Exception as e:
         if etapa == "negociacion":
