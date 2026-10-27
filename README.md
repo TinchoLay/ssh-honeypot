@@ -22,7 +22,7 @@ Someone connects to one of the open ports, thinking they found a real server. Th
 
 ### The three fake services
 
-- **SSH (2222, and 22 through a port forward):** the most built-out one. It opens a fake interactive shell that imitates Ubuntu 22.04. The attacker can type `ls`, `cd`, `whoami` or `cat /etc/passwd` and gets plausible answers. Everything they type is logged.
+- **SSH (2222, and 22 through a port forward):** the most built-out one. It opens a fake interactive shell that imitates Ubuntu 22.04. The attacker can type `ls`, `cd`, `whoami` or `cat /etc/passwd` and gets plausible answers. Everything they type is logged. It also answers commands sent in one go (`ssh host "uname -a"`), which automated tools commonly use instead of opening a session.
 - **HTTP (8080):** a fake admin panel styled after a TP-Link router. It catches scanners looking for poorly secured admin pages. It stores the method, path, headers and POST body.
 - **FTP (2121):** accepts the connection and rejects every credential. It shows which usernames and passwords get tried there.
 
@@ -35,6 +35,7 @@ A honeypot that is easy to recognize only collects traffic from the laziest bots
 - **Believable authentication.** The login is accepted if the password is in a list of weak and default credentials (`weak_passwords.py`, 69 entries from common password lists and IoT defaults), or on the third attempt from the same IP within 10 minutes. A server that accepts everything on the first try looks fake.
 - **A shell that remembers where you are.** `cd`, `pwd` and `ls` work against a small fake filesystem. A fresh home directory is empty, `ls -la` shows the dotfiles, `/` lists the usual directories and `/root` gives "Permission denied" to normal users. The prompt follows the current directory.
 - **Per-user output.** `whoami`, `id` and the "Last login" line match the user who logged in.
+- **Error messages like bash's.** `echo "..." >> file` prints nothing, and running a path that does not exist (`./x.sh`) answers "No such file or directory" instead of "command not found".
 
 These are my own measures against fingerprinting. I have not tested them against a scanner built to detect honeypots, so I do not claim the honeypot is undetectable.
 
@@ -75,23 +76,55 @@ The dashboard listens on `127.0.0.1:5000` only. It is not exposed to the interne
 
 ### Detection with Wazuh
 
-The honeypot writes one JSON line per event and a Wazuh agent on the same machine ships it to a manager. The rules (SSH brute force fast and slow, download attempts, VirusTotal hits, GPON exploit paths, open proxy probes, scanner targets, anonymous FTP) live in the [wazuh-detection-pack](https://github.com/TinchoLay/wazuh-detection-pack/tree/main/honeypot) repository, with the tests I ran and what I could not verify.
+The honeypot writes one JSON line per event and a Wazuh agent on the same machine ships it to a manager. The rules (SSH brute force fast and slow, how each SSH connection ended, commands typed by the attacker, download attempts, VirusTotal hits, GPON exploit paths, open proxy probes, scanner targets, anonymous FTP) live in the [wazuh-detection-pack](https://github.com/TinchoLay/wazuh-detection-pack/tree/main/honeypot) repository, with the tests I ran and what I could not verify.
 
 ### Using port 22
 
-Scanners try port 22 first, so a honeypot that only listens on 2222 sees little. The admin `sshd` on this machine stays on 22, key-only. To catch the traffic I forward port 22 to the container with a DNAT rule in the `nat` table:
+Scanners try port 22 first, so a honeypot that only listens on 2222 sees little. The admin `sshd` on this machine stays on 22, key-only. To catch the traffic I forward port 22 to the container with a DNAT rule in the `nat` table. The rule skips the network I administer the machine from, so the real `sshd` stays reachable for me and for nobody else:
 
 ```bash
 CIP=$(sudo docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ssh-honeypot)
-sudo iptables -t nat -A PREROUTING -p tcp --dport 22 -j DNAT --to-destination $CIP:2222
+sudo iptables -t nat -A PREROUTING ! -s ADMIN_NET -p tcp --dport 22 -j DNAT --to-destination $CIP:2222
 ```
 
-Two details cost me time:
+Replace `ADMIN_NET` with the IP or range you connect from (for example `203.0.113.0/24`).
+
+Three details cost me time:
+
+- **Without the exclusion you lock yourself out.** A DNAT on every source sends your own administration to the honeypot too. With the exclusion, if your IP leaves that range you are locked out of the admin `sshd`. My way back is a reboot (the rule does not persist) or EC2 Instance Connect.
 
 - **Why DNAT and not a redirect to 2222.** Port 2222 is published by Docker through `docker-proxy`. If you redirect to that port, every attacker reaches the container as the bridge address and the real source IP is lost. That breaks the geolocation and every detection that counts attempts per IP. DNAT straight to the container address keeps the source.
 - **The rule does not survive a reboot, and the container address can change after a rebuild.** After `docker compose up --build`, delete the old rule (`iptables -t nat -D PREROUTING <n>`) and add it again with the new address. After a reboot the real `sshd` answers on 22 again, which is the safe way to fail.
 
 The security group has to allow port 22 inbound, and then anyone on the internet can reach that port. Do this only on a machine built for it.
+
+To test the honeypot on port 22, connect from outside the excluded range (I use mobile data). From inside it you reach the real `sshd`. Connecting to the same IP from both sides also triggers a "host key changed" warning, because the two services have different host keys.
+
+### Every SSH connection, and commands sent without a shell
+
+Port 22 brings many connections that never try a password, so counting login attempts hides most of what happens. `connection_logger.py` writes one line per SSH connection to `logs/ssh_connections.json`, with how it ended:
+
+| Result | Meaning |
+|---|---|
+| `sin_banner` | Connected and closed without sending an SSH banner. Typical of port scanners |
+| `error_protocolo` | Sent a banner, but the SSH negotiation failed |
+| `sin_autenticacion` | Negotiated SSH and never tried to log in |
+| `login_fallido` | Tried to log in and was rejected |
+| `autenticado_sin_shell` | Got in and never asked for a shell or a command |
+| `exec` | Got in and sent a single command (`ssh host "uname -a"`) |
+| `shell` | Got in and opened an interactive shell |
+
+Each line also has the client banner, the duration, the number of login attempts and, for `exec`, the command in `detalle`. IPs listed in `HONEYPOT_IGNORE_IPS` are skipped. Docker logs rotate (10 MB, 3 files) so scanner noise cannot fill the disk, and the paramiko tracebacks for dropped connections are silenced because the event is already recorded here.
+
+The first week with port 22 open (19 to 26 October, 2,873 connections) ended like this: 1,250 `login_fallido`, 802 `autenticado_sin_shell`, 669 `sin_banner`, 78 `error_protocolo`, 71 `sin_autenticacion` and only 3 `shell`. The three `autenticado_sin_shell` lines I looked at all came from `SSH-2.0-Go` clients and made one login attempt.
+
+That number made me read my own code. The honeypot only reacted to interactive shell requests. A client that sends a command directly was refused by paramiko's default, so its command was never recorded. I do not know yet how many of those 802 connections sent one. On 26 October I added support:
+
+- `check_channel_exec_request` takes the command, runs it through the same fake interpreter (splitting `cd ~; uname -a && whoami` into parts) and returns the output with an exit code.
+- `shell_commands.json` has a new field, `canal`, which is `shell` or `exec`, so detection rules can tell them apart.
+- Splitting on `;` and `&&` is an approximation. It does not understand quotes or pipes.
+
+I tested it locally with paramiko clients (a simple command, a chained one, an unknown command, an `authorized_keys` write, a `wget`, an interactive shell and a connection that never opens a channel) and in production with a connection from my own phone. Data from before 26 October (about 21:35 UTC) has no `exec` commands, so any before and after comparison has to start there.
 
 ### Ignoring my own traffic
 
@@ -120,6 +153,7 @@ honeypot-aws/
 ├── http_honeypot.py     # HTTP honeypot server
 ├── ftp_honeypot.py      # FTP honeypot server
 ├── logger.py            # Central logging and geolocation
+├── connection_logger.py # One log line per SSH connection and how it ended
 ├── shell_logger.py      # Logs executed commands
 ├── stats.py             # Console stats
 ├── mapa.py              # Static map generator (folium)
@@ -139,6 +173,7 @@ honeypot-aws/
     ├── http_attempts.json
     ├── ftp_attempts.json
     ├── shell_commands.json
+    ├── ssh_connections.json
     ├── fingerprints.json
     ├── ml_classifications.json
     ├── malware_captures.json
@@ -231,7 +266,11 @@ VIRUSTOTAL_KEY=your_api_key
 - The most active IPs trace back to Tor exit nodes, VPS ranges and Chinese IP blocks.
 - The bots are very regular, with milliseconds between attempts.
 
-My latest dashboard count on the AWS instance was 247 events from 111 unique IPs (241 HTTP, 5 SSH). That is before opening port 22, so SSH is expected to change a lot. I will update this section once port 22 has collected data. It is a small sample, but it is real traffic.
+On 26 October, after a week with port 22 open, the dashboard showed 2,899 events from 631 unique IPs: 2,058 SSH login attempts, 838 HTTP requests and a few FTP. Before port 22 it was 247 events from 111 IPs.
+
+The raw total is misleading. Four addresses from a single /24 made 1,716 of the SSH attempts (83%). That block most likely explains the spike of about 900 to 950 events a day on 20 and 21 October, though I have not checked the timestamps. It also explains why the day-of-week chart puts Tuesday and Wednesday far above the rest, and probably why France leads the country chart with 1,781 events. None of that shows that attackers prefer Tuesdays or France. It is one campaign. Country is where the IP is registered, usually a hosting provider, not where the attacker sits.
+
+Outside the spike, activity settled at roughly 80 to 190 events a day, up from 60 to 70 before port 22. I think port 22 explains the increase, but I have not split the counts by port to confirm it.
 
 ### What I learned building this
 
@@ -244,6 +283,9 @@ My latest dashboard count on the AWS instance was 247 events from 111 unique IPs
 - Concurrency with `threading`.
 - The unglamorous production side: running in the background, not losing logs, restarting after a crash, and cleaning my own traffic out of the data.
 - Realism is an arms race. Every detail that is wrong is something a scanner can fingerprint.
+- Check what the honeypot cannot see. 802 connections got in and left no commands, and the reason was a missing handler in my code, not quiet attackers.
+- One campaign can distort every chart. Look at the top IPs before reading a trend into totals by day or country.
+- A rule or a feature that passes a local test is not in production until it is deployed and a real event goes through it.
 
 ### Ethics and legal notes
 
@@ -275,7 +317,7 @@ Alguien se conecta a uno de los puertos abiertos, pensando que encontró un serv
 
 ### Los tres servicios falsos
 
-- **SSH (2222, y 22 mediante un reenvío de puerto):** el más elaborado. Abre una shell interactiva falsa que imita Ubuntu 22.04. El atacante puede tipear `ls`, `cd`, `whoami` o `cat /etc/passwd` y recibe respuestas creíbles. Todo lo que escribe queda registrado.
+- **SSH (2222, y 22 mediante un reenvío de puerto):** el más elaborado. Abre una shell interactiva falsa que imita Ubuntu 22.04. El atacante puede tipear `ls`, `cd`, `whoami` o `cat /etc/passwd` y recibe respuestas creíbles. Todo lo que escribe queda registrado. También responde comandos enviados de una sola vez (`ssh host "uname -a"`), que las herramientas automáticas suelen usar en lugar de abrir una sesión.
 - **HTTP (8080):** un panel de administración falso con la pinta de un router TP-Link. Atrapa scanners que buscan paneles mal protegidos. Guarda el método, la ruta, los headers y el cuerpo del POST.
 - **FTP (2121):** acepta la conexión y rechaza cualquier credencial. Muestra qué usuarios y contraseñas se prueban ahí.
 
@@ -288,6 +330,7 @@ Un honeypot fácil de reconocer solo junta tráfico de los bots más vagos. Hice
 - **Autenticación creíble.** El login se acepta si la contraseña está en una lista de credenciales débiles y de fábrica (`weak_passwords.py`, 69 entradas de listas de contraseñas comunes y defaults de IoT), o al tercer intento desde la misma IP dentro de 10 minutos. Un servidor que acepta todo al primer intento parece falso.
 - **Una shell que recuerda dónde estás.** `cd`, `pwd` y `ls` funcionan sobre un filesystem falso chico. Un home recién creado está vacío, `ls -la` muestra los dotfiles, `/` lista los directorios de siempre y `/root` da "Permission denied" a los usuarios comunes. El prompt sigue el directorio actual.
 - **Salida según el usuario.** `whoami`, `id` y la línea "Last login" coinciden con el usuario que entró.
+- **Mensajes de error como los de bash.** `echo "..." >> archivo` no imprime nada, y ejecutar una ruta que no existe (`./x.sh`) responde "No such file or directory" en vez de "command not found".
 
 Son medidas propias contra el fingerprinting. No las probé contra un scanner hecho para detectar honeypots, así que no afirmo que sea indetectable.
 
@@ -328,23 +371,55 @@ El dashboard escucha solo en `127.0.0.1:5000`. No está expuesto a internet, as�
 
 ### Detección con Wazuh
 
-El honeypot escribe una línea JSON por evento y un agente de Wazuh en la misma máquina la manda a un manager. Las reglas (fuerza bruta SSH rápida y lenta, intentos de descarga, hallazgos de VirusTotal, rutas de exploit de GPON, pruebas de proxy abierto, objetivos de scanners, FTP anónimo) están en el repositorio [wazuh-detection-pack](https://github.com/TinchoLay/wazuh-detection-pack/tree/main/honeypot), con las pruebas que hice y lo que no pude verificar.
+El honeypot escribe una línea JSON por evento y un agente de Wazuh en la misma máquina la manda a un manager. Las reglas (fuerza bruta SSH rápida y lenta, cómo terminó cada conexión SSH, comandos que escribe el atacante, intentos de descarga, hallazgos de VirusTotal, rutas de exploit de GPON, pruebas de proxy abierto, objetivos de scanners, FTP anónimo) están en el repositorio [wazuh-detection-pack](https://github.com/TinchoLay/wazuh-detection-pack/tree/main/honeypot), con las pruebas que hice y lo que no pude verificar.
 
 ### Usar el puerto 22
 
-Los scanners prueban primero el puerto 22, así que un honeypot que solo escucha en el 2222 ve poco. El `sshd` de administración de esta máquina queda en el 22, solo con clave. Para atrapar el tráfico reenvío el puerto 22 al contenedor con una regla DNAT en la tabla `nat`:
+Los scanners prueban primero el puerto 22, así que un honeypot que solo escucha en el 2222 ve poco. El `sshd` de administración de esta máquina queda en el 22, solo con clave. Para atrapar el tráfico reenvío el puerto 22 al contenedor con una regla DNAT en la tabla `nat`. La regla saltea la red desde la que administro la máquina, así el `sshd` real sigue accesible para mí y para nadie más:
 
 ```bash
 CIP=$(sudo docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ssh-honeypot)
-sudo iptables -t nat -A PREROUTING -p tcp --dport 22 -j DNAT --to-destination $CIP:2222
+sudo iptables -t nat -A PREROUTING ! -s ADMIN_NET -p tcp --dport 22 -j DNAT --to-destination $CIP:2222
 ```
 
-Dos detalles me hicieron perder tiempo:
+Reemplazá `ADMIN_NET` por la IP o el rango desde el que te conectás (por ejemplo `203.0.113.0/24`).
+
+Tres detalles me hicieron perder tiempo:
+
+- **Sin la exclusión te dejás afuera.** Un DNAT sobre todos los orígenes manda también tu propia administración al honeypot. Con la exclusión, si tu IP sale de ese rango te quedás sin acceso al `sshd` de administración. Mi forma de volver es reiniciar (la regla no persiste) o usar EC2 Instance Connect.
 
 - **Por qué DNAT y no una redirección al 2222.** El puerto 2222 lo publica Docker a través de `docker-proxy`. Si redirigís a ese puerto, todos los atacantes llegan al contenedor con la dirección del bridge y se pierde la IP de origen real. Eso rompe la geolocalización y toda detección que cuente intentos por IP. DNAT directo a la dirección del contenedor conserva el origen.
 - **La regla no sobrevive a un reinicio y la dirección del contenedor puede cambiar después de reconstruirlo.** Después de `docker compose up --build`, borrá la regla vieja (`iptables -t nat -D PREROUTING <n>`) y agregala de nuevo con la dirección nueva. Después de un reinicio vuelve a responder el `sshd` real en el 22, que es la forma segura de fallar.
 
 El security group tiene que permitir el puerto 22 de entrada, y entonces cualquiera en internet llega a ese puerto. Hacelo solo en una máquina pensada para esto.
+
+Para probar el honeypot en el puerto 22, conectate desde fuera del rango excluido (yo uso datos del celular). Desde adentro llegás al `sshd` real. Conectarse a la misma IP desde los dos lados también dispara el aviso "host key changed", porque los dos servicios tienen claves de host distintas.
+
+### Cada conexión SSH, y comandos enviados sin shell
+
+El puerto 22 trae muchas conexiones que nunca prueban una contraseña, así que contar intentos de login esconde casi todo lo que pasa. `connection_logger.py` escribe una línea por conexión SSH en `logs/ssh_connections.json`, con cómo terminó:
+
+| Resultado | Qué significa |
+|---|---|
+| `sin_banner` | Se conectó y cerró sin mandar un banner SSH. Típico de scanners de puertos |
+| `error_protocolo` | Mandó un banner, pero la negociación SSH falló |
+| `sin_autenticacion` | Negoció SSH y nunca intentó loguearse |
+| `login_fallido` | Intentó loguearse y fue rechazado |
+| `autenticado_sin_shell` | Entró y nunca pidió una shell ni un comando |
+| `exec` | Entró y mandó un solo comando (`ssh host "uname -a"`) |
+| `shell` | Entró y abrió una shell interactiva |
+
+Cada línea también tiene el banner del cliente, la duración, la cantidad de intentos de login y, en `exec`, el comando en `detalle`. Las IPs de `HONEYPOT_IGNORE_IPS` se saltean. Los logs de Docker rotan (10 MB, 3 archivos) para que el ruido de los scanners no llene el disco, y los tracebacks de paramiko por conexiones cortadas se silenciaron porque el evento ya queda registrado acá.
+
+La primera semana con el puerto 22 abierto (del 19 al 26 de octubre, 2.873 conexiones) terminó así: 1.250 `login_fallido`, 802 `autenticado_sin_shell`, 669 `sin_banner`, 78 `error_protocolo`, 71 `sin_autenticacion` y solo 3 `shell`. Las tres líneas `autenticado_sin_shell` que miré venían de clientes `SSH-2.0-Go` y hicieron un solo intento de login.
+
+Ese número me hizo leer mi propio código. El honeypot solo reaccionaba a pedidos de shell interactiva. Un cliente que manda un comando directo era rechazado por el comportamiento por defecto de paramiko, así que su comando nunca se registraba. Todavía no sé cuántas de esas 802 conexiones mandaron uno. El 26 de octubre agregué el soporte:
+
+- `check_channel_exec_request` toma el comando, lo ejecuta con el mismo intérprete falso (separando `cd ~; uname -a && whoami` en partes) y devuelve la salida con un código de salida.
+- `shell_commands.json` tiene un campo nuevo, `canal`, que vale `shell` o `exec`, para que las reglas de detección los distingan.
+- Separar por `;` y `&&` es una aproximación. No entiende comillas ni pipes.
+
+Lo probé en local con clientes de paramiko (un comando simple, uno encadenado, uno inexistente, una escritura en `authorized_keys`, un `wget`, una shell interactiva y una conexión que nunca abre un canal) y en producción con una conexión desde mi propio celular. Los datos anteriores al 26 de octubre (alrededor de las 21:35 UTC) no tienen comandos `exec`, así que cualquier comparación de antes y después tiene que arrancar desde ahí.
 
 ### Ignorar mi propio tráfico
 
@@ -373,6 +448,7 @@ honeypot-aws/
 ├── http_honeypot.py     # Servidor HTTP honeypot
 ├── ftp_honeypot.py      # Servidor FTP honeypot
 ├── logger.py            # Logging central y geolocalización
+├── connection_logger.py # Una línea de log por conexión SSH y cómo terminó
 ├── shell_logger.py      # Registro de comandos ejecutados
 ├── stats.py             # Estadísticas en consola
 ├── mapa.py              # Generador de mapa estático (folium)
@@ -392,6 +468,7 @@ honeypot-aws/
     ├── http_attempts.json
     ├── ftp_attempts.json
     ├── shell_commands.json
+    ├── ssh_connections.json
     ├── fingerprints.json
     ├── ml_classifications.json
     ├── malware_captures.json
@@ -484,7 +561,11 @@ VIRUSTOTAL_KEY=tu_api_key
 - Las IPs más activas salen de nodos de salida de Tor, rangos de VPS y bloques de IP chinos.
 - Los bots son muy regulares, con milisegundos entre intentos.
 
-Mi último conteo del dashboard en la instancia de AWS fue de 247 eventos de 111 IPs únicas (241 HTTP, 5 SSH). Es antes de abrir el puerto 22, así que se espera que el SSH cambie mucho. Voy a actualizar esta sección cuando el puerto 22 haya juntado datos. Es una muestra chica, pero es tráfico real.
+El 26 de octubre, después de una semana con el puerto 22 abierto, el dashboard mostraba 2.899 eventos de 631 IPs únicas: 2.058 intentos de login SSH, 838 requests HTTP y unos pocos de FTP. Antes del puerto 22 eran 247 eventos de 111 IPs.
+
+El total crudo engaña. Cuatro direcciones de un solo /24 hicieron 1.716 de los intentos SSH (83%). Ese bloque probablemente explica el pico de unos 900 a 950 eventos por día del 20 y 21 de octubre, aunque no revisé las fechas. También explica por qué el gráfico por día de la semana pone martes y miércoles muy por encima del resto, y probablemente por qué Francia lidera el gráfico de países con 1.781 eventos. Nada de eso muestra que los atacantes prefieran los martes o Francia. Es una sola campaña. El país es donde está registrada la IP, normalmente un proveedor de hosting, no donde está el atacante.
+
+Fuera del pico, la actividad se estabilizó en unos 80 a 190 eventos por día, contra 60 a 70 antes del puerto 22. Creo que el puerto 22 explica el aumento, pero no separé los conteos por puerto para confirmarlo.
 
 ### Lo que aprendí armando esto
 
@@ -497,6 +578,9 @@ Mi último conteo del dashboard en la instancia de AWS fue de 247 eventos de 111
 - Concurrencia con `threading`.
 - La parte poco glamorosa de producción: correr en segundo plano, que no se pierdan los logs, reiniciar después de una caída y sacar mi propio tráfico de los datos.
 - El realismo es una carrera armamentista. Cada detalle mal hecho es algo que un scanner puede usar para identificarlo.
+- Revisar lo que el honeypot no puede ver. 802 conexiones entraron y no dejaron comandos, y la razón era un manejador que faltaba en mi código, no atacantes callados.
+- Una sola campaña puede distorsionar todos los gráficos. Mirá las IPs más activas antes de leer una tendencia en los totales por día o por país.
+- Una regla o una función que pasa una prueba local no está en producción hasta que se despliega y un evento real pasa por ella.
 
 ### Consideraciones éticas y legales
 
