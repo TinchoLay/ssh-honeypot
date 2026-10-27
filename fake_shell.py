@@ -1,4 +1,5 @@
 import re
+import shlex
 import hashlib
 import posixpath
 import paramiko
@@ -196,12 +197,10 @@ def _prompt(usuario, estado):
     return f"{usuario}@ubuntu-server:{d}{simbolo} "
 
 
-def get_response(comando, ip, usuario="root", estado=None):
-    """Devuelve la respuesta para un comando dado."""
+def _ejecutar(comando, ip, usuario, estado):
+    """Respuesta para UN comando suelto (sin ; && || sin comillas). Ver get_response."""
     cmd = comando.strip()
-    if estado is None:
-        estado = {"cwd": _home(usuario)}
-    
+
     # Comandos de salida
     if cmd in ["exit", "logout", "quit"]:
         return None  # None = cerrar la sesión
@@ -209,11 +208,16 @@ def get_response(comando, ip, usuario="root", estado=None):
     # Comando vacío
     if not cmd:
         return ""
+
+    # sh -c "..." y bash -c "...": se ejecuta lo que hay adentro. Va antes de la deteccion
+    # de descargas para que un wget dentro de un sh -c se vea igual que uno suelto.
+    if cmd.split()[0] in ("sh", "bash", "dash"):
+        return _subshell(cmd, ip, usuario, estado)
     
     # Detectar comandos de descarga
     if any(x in cmd for x in ["wget", "curl", "fetch"]):
-        partes = cmd.split()
-        url = next((p for p in partes if p.startswith("http")), None)
+        m = _URL.search(cmd)
+        url = m.group(0) if m else None
         
         if url:
             save_command(ip, cmd, f"ALERTA: Intento de descarga de {url}", canal=estado.get("canal", "shell"))
@@ -237,7 +241,7 @@ def get_response(comando, ip, usuario="root", estado=None):
             return "wget: missing URL"
     
     # Detectar comandos de modificación del sistema
-    if any(x in cmd for x in ["chmod", "chown", "useradd", "userdel", "passwd", "crontab -e"]):
+    if _MODIFICA.search(cmd):
         save_command(ip, cmd, "ALERTA: Intento de modificación del sistema", canal=estado.get("canal", "shell"))
         return ""
     
@@ -277,6 +281,9 @@ def get_response(comando, ip, usuario="root", estado=None):
             return ""
         return cmd[4:].strip().strip("\"'")
 
+    if primera == "uname" and simple:
+        return _uname(cmd.split()[1:])
+
     # Buscar en el diccionario de respuestas
     if cmd in COMANDOS:
         return COMANDOS[cmd]
@@ -287,6 +294,148 @@ def get_response(comando, ip, usuario="root", estado=None):
     if cmd_base.startswith(("./", "/")):
         return f"bash: {cmd_base}: No such file or directory"
     return f"bash: {cmd_base}: command not found"
+
+
+_URL = re.compile(r"https?://[^\s'\"<>;|&`]+")
+# chmod/chown/useradd... como palabra entera, y passwd solo como comando (no "/etc/passwd")
+_MODIFICA = re.compile(
+    r"\b(chmod|chown|useradd|userdel|usermod|adduser|chpasswd)\b|(?:^|[\s;&|])passwd(?:\s|$)|crontab\s+-e")
+
+MAX_PARTES = 20        # comandos encadenados que se ejecutan
+MAX_PROFUNDIDAD = 3    # sh -c dentro de sh -c
+
+# uname: los valores salen de la linea de "uname -a" de COMANDOS
+_UNAME = {"s": "Linux", "n": "ubuntu-server", "r": "5.15.0-1034-aws",
+          "v": "#38-Ubuntu SMP Mon Mar 20 15:41:27 UTC 2023",
+          "m": "x86_64", "p": "x86_64", "i": "x86_64", "o": "GNU/Linux"}
+_UNAME_LARGAS = {"kernel-name": "s", "nodename": "n", "kernel-release": "r",
+                 "kernel-version": "v", "machine": "m", "processor": "p",
+                 "hardware-platform": "i", "operating-system": "o", "all": "a"}
+
+def _uname(args):
+    """uname con las opciones reales. El orden de la salida es siempre el mismo
+    (nombre, host, release, version, maquina...), sin importar el orden de las opciones."""
+    pedidas = set()
+    for a in args:
+        if a.startswith("--"):
+            k = _UNAME_LARGAS.get(a[2:])
+            if k is None:
+                return f"uname: unrecognized option '{a}'\nTry 'uname --help' for more information."
+            pedidas.update(_UNAME if k == "a" else k)
+        elif a.startswith("-") and len(a) > 1:
+            for c in a[1:]:
+                if c == "a":
+                    pedidas.update(_UNAME)
+                elif c in _UNAME:
+                    pedidas.add(c)
+                else:
+                    return f"uname: invalid option -- '{c}'\nTry 'uname --help' for more information."
+        else:
+            return f"uname: extra operand '{a}'\nTry 'uname --help' for more information."
+    if not pedidas:
+        pedidas = {"s"}
+    return " ".join(_UNAME[c] for c in "snrvmpio" if c in pedidas)
+
+def _dividir(cmd):
+    """Parte un comando en [(operador, comando)] por ; && || y saltos de linea,
+    sin cortar lo que esta entre comillas. No entiende pipes ni $( ... )."""
+    partes, buf, op, comilla, i = [], [], ";", None, 0
+    while i < len(cmd):
+        c = cmd[i]
+        if comilla:
+            buf.append(c)
+            if c == comilla:
+                comilla = None
+            elif c == "\\" and comilla == '"' and i + 1 < len(cmd):
+                i += 1
+                buf.append(cmd[i])
+        elif c in "'\"":
+            comilla = c
+            buf.append(c)
+        elif c == "\\" and i + 1 < len(cmd):
+            buf.append(c)
+            i += 1
+            buf.append(cmd[i])
+        elif c in ";\n":
+            partes.append((op, "".join(buf)))
+            buf, op = [], ";"
+        elif cmd.startswith("&&", i) or cmd.startswith("||", i):
+            partes.append((op, "".join(buf)))
+            buf, op = [], cmd[i:i + 2]
+            i += 1
+        else:
+            buf.append(c)
+        i += 1
+    partes.append((op, "".join(buf)))
+    return [(o, t.strip()) for o, t in partes if t.strip()]
+
+def _codigo(respuesta):
+    """Codigo de salida que tendria esa respuesta."""
+    if respuesta is None:
+        return 0
+    if respuesta.startswith("bash: ") and respuesta.endswith("command not found"):
+        return 127
+    if respuesta.startswith(("bash: ./", "bash: /")):
+        return 127      # binario con ruta que no existe
+    if respuesta.startswith(("bash: ", "uname: ", "sh: ")):
+        return 1        # otros errores
+    return 0
+
+def _subshell(cmd, ip, usuario, estado):
+    """sh -c 'comando', bash -c 'comando'. Sin -c no hay script que correr."""
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return "bash: unexpected EOF while looking for matching quote"
+    nombre = tokens[0]
+    if "-c" not in tokens:
+        archivos = [t for t in tokens[1:] if not t.startswith("-")]
+        if not archivos:
+            return ""
+        if nombre in ("sh", "dash"):
+            return f"sh: 0: Can't open {archivos[0]}"
+        return f"bash: {archivos[0]}: No such file or directory"
+    i = tokens.index("-c")
+    if i + 1 >= len(tokens):
+        return f"{nombre}: -c: option requires an argument"
+    if estado.get("prof", 0) >= MAX_PROFUNDIDAD:
+        return ""
+    estado["prof"] = estado.get("prof", 0) + 1
+    try:
+        r = get_response(tokens[i + 1], ip, usuario, estado)
+    finally:
+        estado["prof"] -= 1
+    estado.pop("salir", None)   # un exit dentro de sh -c no cierra la sesion
+    return "" if r is None else r
+
+def get_response(comando, ip, usuario="root", estado=None):
+    """Devuelve la respuesta para un comando, o para varios encadenados con ; && || o
+    saltos de linea. None significa que el atacante pidio cerrar la sesion. Si el exit
+    llega despues de otros comandos, se devuelve su salida y estado["salir"] queda en True.
+    estado["codigo"] guarda el codigo de salida del ultimo comando."""
+    if estado is None:
+        estado = {"cwd": _home(usuario)}
+    partes = _dividir(comando.strip())
+    if len(partes) <= 1:
+        r = _ejecutar(partes[0][1] if partes else "", ip, usuario, estado)
+        estado["codigo"] = _codigo(r)
+        return r
+
+    salida, fallo = [], False
+    for op, parte in partes[:MAX_PARTES]:
+        if (op == "&&" and fallo) or (op == "||" and not fallo):
+            continue
+        r = _ejecutar(parte, ip, usuario, estado)
+        if r is None:
+            estado["salir"] = True
+            break
+        estado["codigo"] = _codigo(r)
+        fallo = estado["codigo"] != 0
+        if r:
+            salida.append(r)
+    if estado.get("salir") and not salida:
+        return None
+    return "\n".join(salida)
 
 
 # --- Autenticacion creible -------------------------------------------------
@@ -371,16 +520,10 @@ def _ultimo_login(client_ip):
     return fecha.strftime("%a %b %d %H:%M:%S %Y"), origen
 
 MAX_EXEC_LARGO = 4096   # caracteres que se procesan de un comando exec
-MAX_EXEC_PARTES = 20    # cuantos comandos encadenados se ejecutan
-
-def _partes_exec(comando):
-    """Parte "cd ~; uname -a && whoami" en comandos sueltos. Es una aproximacion: no
-    entiende comillas ni pipes (un ; dentro de un echo "a;b" tambien se parte)."""
-    return [p.strip() for p in re.split(r";|&&|\n", comando) if p.strip()][:MAX_EXEC_PARTES]
 
 def manejar_exec(channel, client_ip, username, comando):
-    """Responde a un comando directo (canal exec): ejecuta cada parte con el mismo
-    interprete falso que la shell interactiva, devuelve la salida y cierra el canal."""
+    """Responde a un comando directo (canal exec): lo ejecuta con el mismo interprete falso
+    que la shell interactiva, devuelve la salida y cierra el canal."""
     usuario = re.sub(r"[^A-Za-z0-9_.-]", "", str(username))[:32] or "user"
     comando = comando[:MAX_EXEC_LARGO]
     estado = {"cwd": _home(usuario), "canal": "exec"}
@@ -388,28 +531,12 @@ def manejar_exec(channel, client_ip, username, comando):
     # Se guarda el comando entero una vez, tal cual llego
     save_command(client_ip, comando, "Comando por canal exec", canal="exec")
 
-    salida = []
-    codigo = 0
-    for parte in _partes_exec(comando):
-        respuesta = get_response(parte, client_ip, usuario, estado)
-        if respuesta is None:  # exit
-            break
-        if respuesta.startswith("bash: ") and respuesta.endswith("command not found"):
-            codigo = 127
-        elif respuesta.startswith(("bash: ./", "bash: /")):
-            codigo = 127    # binario con ruta que no existe
-        elif respuesta.startswith("bash: "):
-            codigo = 1      # otros errores (cd a un directorio inexistente, permisos)
-        else:
-            codigo = 0
-        if respuesta:
-            salida.append(respuesta)
-
+    respuesta = get_response(comando, client_ip, usuario, estado) or ""
     try:
-        if salida:
+        if respuesta:
             # Sin pty las salidas terminan en \n (no \r\n)
-            channel.send(("\n".join(salida).replace("\r\n", "\n") + "\n").encode())
-        channel.send_exit_status(codigo)
+            channel.send((respuesta.replace("\r\n", "\n") + "\n").encode())
+        channel.send_exit_status(estado.get("codigo", 0))
     except Exception:
         pass
     finally:
@@ -459,14 +586,16 @@ Last login: {ultima_fecha} from {ultimo_origen}
                         # Obtener la respuesta
                         respuesta = get_response(comando_actual.strip(), client_ip, usuario, estado)
                         
-                        # None significa que pidió exit
-                        if respuesta is None:
+                        # None, o estado["salir"], significa que pidió exit
+                        salir = respuesta is None or estado.pop("salir", False)
+
+                        if respuesta:
+                            channel.send((respuesta.replace("\r\n", "\n").replace("\n", "\r\n") + "\r\n").encode())
+
+                        if salir:
                             channel.send(b"logout\r\n")
                             channel.close()
                             return
-                        
-                        if respuesta:
-                            channel.send((respuesta.replace("\r\n", "\n").replace("\n", "\r\n") + "\r\n").encode())
                     
                     comando_actual = ""
                     prompt = _prompt(usuario, estado)

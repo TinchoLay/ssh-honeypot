@@ -126,6 +126,18 @@ That number made me read my own code. The honeypot only reacted to interactive s
 
 I tested it locally with paramiko clients (a simple command, a chained one, an unknown command, an `authorized_keys` write, a `wget`, an interactive shell and a connection that never opens a channel) and in production with a connection from my own phone. Data from before 26 October (about 21:35 UTC) has no `exec` commands, so any before and after comparison has to start there.
 
+### Closing the realism gaps found in the logs
+
+On 27 October the logs showed three places where the fake shell gave itself away, so I fixed them:
+
+- **`uname` with options.** 56 of 56 `exec` commands were `uname -s -v -n -r -m` and the honeypot answered `command not found`, which a real Linux never does. `uname` now understands the real flags (`-s -n -r -v -m -p -i -o -a` and the long forms), prints them in the same order as the real tool and rejects invalid ones the way it does.
+- **`sh -c` and `bash -c`.** The inner command is now executed, so a `wget` hidden inside `sh -c "..."` is detected like a loose one. Nesting is capped at 3 levels.
+- **Chained commands in the interactive shell.** `echo; echo x` or `ls; exit` used to be read as one word. The splitting that only `exec` had (`;`, `&&`, `||`, newlines, respecting quotes) now lives in `get_response`, so both channels behave the same way.
+
+A bug that had been logging false alerts also went away: `cat /etc/passwd` matched the substring `passwd` and was treated as an attempt to change a password. Now `passwd` only counts as a command.
+
+Known limits: pipes, `$( )`, variables, functions and arithmetic are still not interpreted. One IP ran a shell capability check with all of those (random arithmetic, `$$`, a function, `set --`) and the fake shell cannot answer it. I left that gap documented instead of half-faking it.
+
 ### Ignoring my own traffic
 
 Testing from home put my own connections in the logs. The `HONEYPOT_IGNORE_IPS` variable takes a comma-separated list of IPs or CIDR ranges that every collector skips (SSH, HTTP, FTP, shell commands and malware capture). Put it in a `.env` file, which is gitignored. Use exact IPs: an ISP range such as a /24 also hides other customers of the same provider.
@@ -420,6 +432,18 @@ Ese número me hizo leer mi propio código. El honeypot solo reaccionaba a pedid
 - Separar por `;` y `&&` es una aproximación. No entiende comillas ni pipes.
 
 Lo probé en local con clientes de paramiko (un comando simple, uno encadenado, uno inexistente, una escritura en `authorized_keys`, un `wget`, una shell interactiva y una conexión que nunca abre un canal) y en producción con una conexión desde mi propio celular. Los datos anteriores al 26 de octubre (alrededor de las 21:35 UTC) no tienen comandos `exec`, así que cualquier comparación de antes y después tiene que arrancar desde ahí.
+
+### Cerrar los huecos de realismo que mostraron los logs
+
+El 27 de octubre los logs mostraron tres lugares donde la shell falsa se delataba, así que los arreglé:
+
+- **`uname` con opciones.** 56 de 56 comandos `exec` eran `uname -s -v -n -r -m` y el honeypot respondía `command not found`, algo que un Linux real nunca hace. Ahora `uname` entiende las opciones reales (`-s -n -r -v -m -p -i -o -a` y las formas largas), las imprime en el mismo orden que la herramienta real y rechaza las inválidas como lo hace ella.
+- **`sh -c` y `bash -c`.** Ahora se ejecuta el comando de adentro, así que un `wget` escondido en `sh -c "..."` se detecta igual que uno suelto. El anidado se limita a 3 niveles.
+- **Comandos encadenados en la shell interactiva.** `echo; echo x` o `ls; exit` se leían como una sola palabra. La separación que solo tenía `exec` (`;`, `&&`, `||`, saltos de línea, respetando comillas) ahora vive en `get_response`, así que los dos canales se comportan igual.
+
+También desapareció un bug que generaba falsas alertas: `cat /etc/passwd` coincidía con la cadena `passwd` y se trataba como un intento de cambiar una contraseña. Ahora `passwd` solo cuenta como comando.
+
+Límites conocidos: pipes, `$( )`, variables, funciones y aritmética todavía no se interpretan. Una IP corrió una verificación de capacidades de la shell con todo eso (aritmética al azar, `$$`, una función, `set --`) y la shell falsa no puede responderla. Dejé el hueco documentado en vez de fingirlo a medias.
 
 ### Ignorar mi propio tráfico
 
