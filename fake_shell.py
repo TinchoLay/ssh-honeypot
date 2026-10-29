@@ -7,6 +7,7 @@ import threading
 from weak_passwords import CLAVES_DEBILES
 from datetime import datetime, timedelta
 from shell_logger import save_command
+import shell_interp
 
 # Respuestas falsas para los comandos más comunes
 # El atacante ve output realista pero nada es real
@@ -336,43 +337,11 @@ def _uname(args):
         pedidas = {"s"}
     return " ".join(_UNAME[c] for c in "snrvmpio" if c in pedidas)
 
-def _dividir(cmd):
-    """Parte un comando en [(operador, comando)] por ; && || y saltos de linea,
-    sin cortar lo que esta entre comillas. No entiende pipes ni $( ... )."""
-    partes, buf, op, comilla, i = [], [], ";", None, 0
-    while i < len(cmd):
-        c = cmd[i]
-        if comilla:
-            buf.append(c)
-            if c == comilla:
-                comilla = None
-            elif c == "\\" and comilla == '"' and i + 1 < len(cmd):
-                i += 1
-                buf.append(cmd[i])
-        elif c in "'\"":
-            comilla = c
-            buf.append(c)
-        elif c == "\\" and i + 1 < len(cmd):
-            buf.append(c)
-            i += 1
-            buf.append(cmd[i])
-        elif c in ";\n":
-            partes.append((op, "".join(buf)))
-            buf, op = [], ";"
-        elif cmd.startswith("&&", i) or cmd.startswith("||", i):
-            partes.append((op, "".join(buf)))
-            buf, op = [], cmd[i:i + 2]
-            i += 1
-        else:
-            buf.append(c)
-        i += 1
-    partes.append((op, "".join(buf)))
-    return [(o, t.strip()) for o, t in partes if t.strip()]
-
 def _codigo(respuesta):
     """Codigo de salida que tendria esa respuesta."""
     if respuesta is None:
         return 0
+    respuesta = respuesta.rstrip("\n")
     if respuesta.startswith("bash: ") and respuesta.endswith("command not found"):
         return 127
     if respuesta.startswith(("bash: ./", "bash: /")):
@@ -380,6 +349,10 @@ def _codigo(respuesta):
     if respuesta.startswith(("bash: ", "uname: ", "sh: ")):
         return 1        # otros errores
     return 0
+
+# Lo que es propio de cada proceso de shell: un "sh -c" no ve las funciones, los
+# parametros ni las variables de quien lo llamo, y tiene su propio PID.
+_CONTEXTO = ("params", "funcs", "vars", "pid", "dialecto", "nivel_func")
 
 def _subshell(cmd, ip, usuario, estado):
     """sh -c 'comando', bash -c 'comando'. Sin -c no hay script que correr."""
@@ -400,42 +373,43 @@ def _subshell(cmd, ip, usuario, estado):
         return f"{nombre}: -c: option requires an argument"
     if estado.get("prof", 0) >= MAX_PROFUNDIDAD:
         return ""
+    guardado = {k: estado.pop(k) for k in _CONTEXTO if k in estado}
     estado["prof"] = estado.get("prof", 0) + 1
+    estado["pid"] = shell_interp.nuevo_pid(estado)       # cada sh -c es un proceso nuevo
+    estado["dialecto"] = "dash" if nombre in ("sh", "dash") else "bash"
     try:
         r = get_response(tokens[i + 1], ip, usuario, estado)
+        codigo = estado.get("codigo", 0)
     finally:
         estado["prof"] -= 1
+        for k in _CONTEXTO:
+            estado.pop(k, None)
+        estado.update(guardado)
     estado.pop("salir", None)   # un exit dentro de sh -c no cierra la sesion
-    return "" if r is None else r
+    return shell_interp.Exacto("" if r is None else r, codigo)
+
+def _clasico(ip, usuario, estado):
+    """Ejecuta UN comando suelto con la shell clasica: (respuesta, codigo de salida)."""
+    def ejecutar(raw):
+        r = _ejecutar(raw, ip, usuario, estado)
+        if isinstance(r, shell_interp.Exacto):
+            return r, r.codigo
+        return r, _codigo(r)
+    return ejecutar
 
 def get_response(comando, ip, usuario="root", estado=None):
-    """Devuelve la respuesta para un comando, o para varios encadenados con ; && || o
-    saltos de linea. None significa que el atacante pidio cerrar la sesion. Si el exit
-    llega despues de otros comandos, se devuelve su salida y estado["salir"] queda en True.
+    """Salida EXACTA de una orden: uno o varios comandos encadenados con ; && || o
+    saltos de linea, con funciones, printf y aritmetica (ver shell_interp.py). Incluye los
+    saltos de linea finales, asi un printf sin \\n no termina en salto, igual que en Linux.
+    None significa que el atacante pidio cerrar la sesion; si el exit llega despues de
+    otros comandos, se devuelve su salida y estado["salir"] queda en True.
     estado["codigo"] guarda el codigo de salida del ultimo comando."""
     if estado is None:
         estado = {"cwd": _home(usuario)}
-    partes = _dividir(comando.strip())
-    if len(partes) <= 1:
-        r = _ejecutar(partes[0][1] if partes else "", ip, usuario, estado)
-        estado["codigo"] = _codigo(r)
-        return r
-
-    salida, fallo = [], False
-    for op, parte in partes[:MAX_PARTES]:
-        if (op == "&&" and fallo) or (op == "||" and not fallo):
-            continue
-        r = _ejecutar(parte, ip, usuario, estado)
-        if r is None:
-            estado["salir"] = True
-            break
-        estado["codigo"] = _codigo(r)
-        fallo = estado["codigo"] != 0
-        if r:
-            salida.append(r)
+    salida = shell_interp.ejecutar(comando.strip(), _clasico(ip, usuario, estado), estado)
     if estado.get("salir") and not salida:
         return None
-    return "\n".join(salida)
+    return salida
 
 
 # --- Autenticacion creible -------------------------------------------------
@@ -534,8 +508,8 @@ def manejar_exec(channel, client_ip, username, comando):
     respuesta = get_response(comando, client_ip, usuario, estado) or ""
     try:
         if respuesta:
-            # Sin pty las salidas terminan en \n (no \r\n)
-            channel.send((respuesta.replace("\r\n", "\n") + "\n").encode())
+            # Sin pty las salidas terminan en \n (no \r\n). La respuesta ya trae su salto final.
+            channel.send(respuesta.replace("\r\n", "\n").encode())
         channel.send_exit_status(estado.get("codigo", 0))
     except Exception:
         pass
@@ -590,7 +564,7 @@ Last login: {ultima_fecha} from {ultimo_origen}
                         salir = respuesta is None or estado.pop("salir", False)
 
                         if respuesta:
-                            channel.send((respuesta.replace("\r\n", "\n").replace("\n", "\r\n") + "\r\n").encode())
+                            channel.send(respuesta.replace("\r\n", "\n").replace("\n", "\r\n").encode())
 
                         if salir:
                             channel.send(b"logout\r\n")
