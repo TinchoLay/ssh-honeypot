@@ -1,0 +1,7 @@
+sh -c 'printf '"'"'\n%s|%s\n'"'"' '"'"'check_HASH_small_control'"'"' '"'"'check_HASH'"'"''
+sh -c 'printf '"'"'\n%s|%s\n'"'"' '"'"'check_HASH_small_math'"'"' "$((119*477+3))"'
+sh -c 'printf '"'"'\n%s|%s\n'"'"' '"'"'check_HASH_small_pid'"'"' "$$"'
+sh -c 'set -- '"'"'check_HASH_arg1'"'"' '"'"'check_HASH_arg2'"'"'; printf '"'"'\n%s|%s\n'"'"' '"'"'check_HASH_small_positional'"'"' "$#|$1|$2"'
+sh -c 'f_check_HASH() { printf '"'"'\n%s|%s\n'"'"' '"'"'check_HASH_small_function'"'"' "$1|$#"; }; f_check_HASH '"'"'check_HASH_function_value'"'"''
+sh -c 'printf '"'"'\n%s\n'"'"' '"'"'check_HASH_small_done'"'"''
+echo; echo 'check_HASH_transport_done'

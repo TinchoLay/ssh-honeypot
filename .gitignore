@@ -4,3 +4,4 @@ venv/
 logs/
 mapa_ataques.html
 .env
+.pytest_cache/
