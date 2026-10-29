@@ -136,7 +136,22 @@ On 27 October the logs showed three places where the fake shell gave itself away
 
 A bug that had been logging false alerts also went away: `cat /etc/passwd` matched the substring `passwd` and was treated as an attempt to change a password. Now `passwd` only counts as a command.
 
-Known limits: pipes, `$( )`, variables, functions and arithmetic are still not interpreted. One IP ran a shell capability check with all of those (random arithmetic, `$$`, a function, `set --`) and the fake shell cannot answer it. I left that gap documented instead of half-faking it.
+Known limits: pipes, redirections, `$( )`, loops and `if`/`case` are still not interpreted. The next section covers what the shell can now compute.
+
+### Passing the shell capability check
+
+Some bots do not ask whether a file exists. They send a small script and check that the shell actually computes: `printf` with a random marker, `$((a*b+c))`, `$$`, `set --` with positional parameters and a function. Until now the fake shell answered `command not found` to all of it, which a real shell never does. By 29 October the logs held 245 commands of this kind.
+
+`shell_interp.py` is a small interpreter for exactly that subset: `printf` (formats, width, and reuse of the format when there are more arguments), `echo`, integer arithmetic with 64-bit wraparound, variables, `$$ $# $? $1...`, `set --`, `shift`, functions, and `;`, `&&`, `||`. Output is now exact, including the trailing newline: `printf abc` returns `abc` without a newline, as on Linux.
+
+Why it is safe to run attacker text through it:
+
+- Attacker text never reaches `eval`, `exec`, a subprocess or a real shell. It is read character by character and reduced to data.
+- Arithmetic is checked against a whitelist of characters and then evaluated by walking the syntax tree with a whitelist of operators. Expression length, exponents and shifts are capped.
+- Everything is bounded: 20 commands per list, 200 steps per order, 8 levels of function calls, 3 levels of `sh -c` and 20,000 characters of `printf` output.
+- Each `sh -c` behaves like its own process: it gets its own PID and does not see the caller's functions or parameters.
+
+Still missing: `test` and `[`, and the dash error messages. A real Ubuntu runs `sh -c` with dash, which says `sh: 1: foobar: not found`, while this shell answers in bash style. I have not changed that yet.
 
 ### Ignoring my own traffic
 
@@ -161,6 +176,7 @@ It makes one lookup per unique IP and waits between requests to stay under the f
 honeypot-aws/
 ├── honeypot.py          # Entry point, starts all services
 ├── fake_shell.py        # Fake interactive SSH shell and authentication
+├── shell_interp.py      # Mini interpreter: printf, arithmetic, $$, functions (no eval)
 ├── weak_passwords.py    # Weak and default credentials that get accepted
 ├── http_honeypot.py     # HTTP honeypot server
 ├── ftp_honeypot.py      # FTP honeypot server
@@ -180,6 +196,9 @@ honeypot-aws/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
+├── requirements-dev.txt # Test dependencies (pytest)
+├── pytest.ini
+├── tests/               # Fake shell tests, an end-to-end SSH test and a fuzz test
 └── logs/                # Generated at runtime, not in the repo
     ├── attempts.json
     ├── http_attempts.json
@@ -218,6 +237,23 @@ honeypot-aws/
 
 The dashboard also loads Leaflet, Chart.js and Socket.IO in the browser.
 
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The suite covers the fake shell and its interpreter, the login rules and full SSH sessions. It needs no network and writes nothing to disk, because `tests/conftest.py` replaces the loggers and the malware downloader with test doubles before importing `fake_shell`.
+
+- **Fake shell (`tests/test_fake_shell.py`).** Each test pins one answer a real Linux box would give: `uname` with any option combination, exit codes (`127` for an unknown command), `cd`/`pwd`/prompt consistency, chained commands with `;`, `&&` and `||` without splitting inside quotes, `sh -c`, and the exec channel. Several cases come from commands that actually reached the honeypot, such as `uname -s -v -n -r -m` and `/ip cloud print`.
+- **A regression I had already hit.** `cat /etc/passwd` must not be logged as a system modification attempt. The test exists because the word `passwd` once triggered that alert.
+- **Login rules.** Weak passwords get in on the first try, strong ones on the third attempt from the same IP, and old failures expire after ten minutes.
+- **End to end (`tests/test_ssh_integration.py`).** A real paramiko client connects to the fake server over an in-memory socket pair, authenticates, runs an exec command and opens an interactive shell. Its main job is to catch breakage when paramiko is upgraded.
+- **The bot's shell check, verbatim.** `tests/fixtures/examen_shell.txt` holds the seven commands exactly as they were logged (only the random hash is replaced). They run in-process and through a real SSH client, one connection per command, as the bots do.
+- **Arithmetic and safety.** Operator precedence, C-style division and modulo, 64-bit wraparound, and a set of inputs that must be rejected: Python code inside `$(( ))`, `9**9**9`, huge shifts and deeply nested parentheses.
+- **Fuzzing.** `tests/test_fuzz_shell.py` throws random mixes of shell metacharacters at the shell with fixed seeds. The rule is simple: nothing raises and nothing takes more than half a second. The first run found a crash (`$VAR` on an unset variable left no command to run), now fixed and covered.
+
 ### Local setup
 
 Requirements: Python 3.9 or newer and pip.
@@ -252,6 +288,29 @@ docker compose up -d --build
 ```
 
 When you rebuild, check that the build output does not say `CACHED` for the steps you changed, or the old code keeps running.
+
+### Container hardening
+
+The honeypot is meant to receive hostile traffic, so the container gets only what it needs:
+
+- Runs as an unprivileged user (UID 10001), not as root.
+- `read_only: true` with a `tmpfs` on `/tmp`. The only writable place is the `logs/` volume, which is where every log, the host key and the ML model are written.
+- `cap_drop: ALL`. All its ports are above 1024, so it needs no Linux capabilities.
+- `no-new-privileges`, a process limit (`pids_limit`) and a memory limit.
+
+The `logs/` folder on the host must belong to UID 10001, or the container cannot write to it. If you are migrating a deployment that used to run as root:
+
+```bash
+sudo chown -R 10001:10001 logs
+```
+
+### Why paramiko stays on 4.0.0
+
+paramiko 4.0.0 is affected by CVE-2026-44405 (SHA-1 allowed in RSA signatures, CVSS 3.4, no known public exploitation). Version 5 removes SHA-1 entirely, and I tested what that changes here: an OpenSSH client that offers only `diffie-hellman-group14-sha1` negotiates with 4.0.0 and is rejected by 5.1.0 ("no matching key exchange method found"). Modern clients notice nothing.
+
+For a normal SSH server that is the right trade. For a honeypot it is the opposite: it protects no real data, and the old SHA-1-only scanners and IoT botnets are exactly the traffic I want to observe. So I am staying on 4.0.0 for the measurement window, with this written down, and I will compare against 5.x later. `pip-audit` will flag the CVE, and the justification above is the accepted exception.
+
+The test suite passes on both versions, so the upgrade itself is a one-line change in `requirements.txt` (5.x also needs `invoke` 3.0.3).
 
 ### Environment variables
 
@@ -443,7 +502,22 @@ El 27 de octubre los logs mostraron tres lugares donde la shell falsa se delatab
 
 También desapareció un bug que generaba falsas alertas: `cat /etc/passwd` coincidía con la cadena `passwd` y se trataba como un intento de cambiar una contraseña. Ahora `passwd` solo cuenta como comando.
 
-Límites conocidos: pipes, `$( )`, variables, funciones y aritmética todavía no se interpretan. Una IP corrió una verificación de capacidades de la shell con todo eso (aritmética al azar, `$$`, una función, `set --`) y la shell falsa no puede responderla. Dejé el hueco documentado en vez de fingirlo a medias.
+Límites conocidos: pipes, redirecciones, `$( )`, bucles y `if`/`case` todavía no se interpretan. La sección siguiente cuenta lo que la shell ya sabe calcular.
+
+### Pasar la verificación de capacidades de la shell
+
+Algunos bots no preguntan si existe un archivo. Mandan un script chico y comprueban que la shell realmente calcule: `printf` con un marcador al azar, `$((a*b+c))`, `$$`, `set --` con parámetros posicionales y una función. Hasta ahora la shell falsa respondía `command not found` a todo eso, algo que una shell real nunca hace. Al 29 de octubre los logs tenían 245 comandos de este tipo.
+
+`shell_interp.py` es un intérprete chico para exactamente ese subconjunto: `printf` (formatos, ancho y reutilización del formato cuando sobran argumentos), `echo`, aritmética entera con desborde a 64 bits, variables, `$$ $# $? $1...`, `set --`, `shift`, funciones, y `;`, `&&`, `||`. La salida ahora es exacta, con su salto de línea final: `printf abc` devuelve `abc` sin salto, como en Linux.
+
+Por qué es seguro pasarle texto de un atacante:
+
+- El texto del atacante nunca llega a `eval`, `exec`, un subproceso ni una shell real. Se lo lee carácter por carácter y se lo reduce a datos.
+- La aritmética pasa primero por una lista blanca de caracteres y después se evalúa recorriendo el árbol de sintaxis con una lista blanca de operadores. El largo de la expresión, los exponentes y los desplazamientos tienen tope.
+- Todo está acotado: 20 comandos por lista, 200 pasos por orden, 8 niveles de funciones, 3 niveles de `sh -c` y 20.000 caracteres de salida de `printf`.
+- Cada `sh -c` se comporta como un proceso propio: tiene su PID y no ve las funciones ni los parámetros de quien lo llamó.
+
+Todavía falta: `test` y `[`, y los mensajes de error de dash. Un Ubuntu real ejecuta `sh -c` con dash, que dice `sh: 1: foobar: not found`, mientras que esta shell responde al estilo de bash. Eso todavía no lo cambié.
 
 ### Ignorar mi propio tráfico
 
@@ -468,6 +542,7 @@ Hace una consulta por IP única y espera entre pedidos para quedar bajo el lími
 honeypot-aws/
 ├── honeypot.py          # Punto de entrada, arranca todos los servicios
 ├── fake_shell.py        # Shell SSH interactiva falsa y autenticación
+├── shell_interp.py      # Mini intérprete: printf, aritmética, $$, funciones (sin eval)
 ├── weak_passwords.py    # Credenciales débiles y de fábrica que se aceptan
 ├── http_honeypot.py     # Servidor HTTP honeypot
 ├── ftp_honeypot.py      # Servidor FTP honeypot
@@ -487,6 +562,9 @@ honeypot-aws/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
+├── requirements-dev.txt # Dependencias de los tests (pytest)
+├── pytest.ini
+├── tests/               # Tests de la shell falsa, un test SSH de punta a punta y uno de fuzzing
 └── logs/                # Se genera al correr, no está en el repo
     ├── attempts.json
     ├── http_attempts.json
@@ -525,6 +603,23 @@ honeypot-aws/
 
 El dashboard además carga Leaflet, Chart.js y Socket.IO en el navegador.
 
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+La suite cubre la shell falsa y su intérprete, las reglas de login y sesiones SSH completas. No necesita red ni escribe en disco, porque `tests/conftest.py` reemplaza los loggers y el descargador de malware por dobles de prueba antes de importar `fake_shell`.
+
+- **Shell falsa (`tests/test_fake_shell.py`).** Cada test fija una respuesta que daría un Linux real: `uname` con cualquier combinación de opciones, códigos de salida (`127` para un comando desconocido), coherencia entre `cd`, `pwd` y el prompt, comandos encadenados con `;`, `&&` y `||` sin cortar dentro de comillas, `sh -c` y el canal exec. Varios casos salen de comandos que llegaron de verdad al honeypot, como `uname -s -v -n -r -m` y `/ip cloud print`.
+- **Una regresión que ya había tenido.** `cat /etc/passwd` no debe registrarse como intento de modificación del sistema. El test existe porque la palabra `passwd` llegó a disparar esa alerta.
+- **Reglas de login.** Las contraseñas débiles entran al primer intento, las fuertes al tercero desde la misma IP, y los fallos viejos vencen a los diez minutos.
+- **De punta a punta (`tests/test_ssh_integration.py`).** Un cliente paramiko real se conecta al servidor falso por un par de sockets en memoria, se autentica, ejecuta un comando por exec y abre una shell interactiva. Sirve sobre todo para detectar roturas cuando se actualiza paramiko.
+- **La verificación del bot, tal cual.** `tests/fixtures/examen_shell.txt` guarda los siete comandos exactamente como se registraron (solo se reemplazó el hash al azar). Se ejecutan en el mismo proceso y con un cliente SSH real, una conexión por comando, como hacen los bots.
+- **Aritmética y seguridad.** Precedencia de operadores, división y módulo al estilo C, desborde a 64 bits, y un conjunto de entradas que deben rechazarse: código Python dentro de `$(( ))`, `9**9**9`, desplazamientos enormes y paréntesis anidados en exceso.
+- **Fuzzing.** `tests/test_fuzz_shell.py` le tira a la shell mezclas al azar de metacaracteres con semillas fijas. La regla es simple: nada lanza una excepción y nada tarda más de medio segundo. La primera corrida encontró un fallo (`$VAR` sobre una variable sin definir dejaba sin comando para ejecutar), ya corregido y cubierto.
+
 ### Instalación local
 
 Requisitos: Python 3.9 o superior y pip.
@@ -559,6 +654,29 @@ docker compose up -d --build
 ```
 
 Cuando lo reconstruyas, fijate que la salida del build no diga `CACHED` en los pasos que cambiaste, o sigue corriendo el código viejo.
+
+### Endurecimiento del contenedor
+
+El honeypot está pensado para recibir tráfico hostil, así que el contenedor tiene solo lo que necesita:
+
+- Corre con un usuario sin privilegios (UID 10001), no como root.
+- `read_only: true` con un `tmpfs` en `/tmp`. El único lugar donde puede escribir es el volumen `logs/`, que es donde van todos los logs, la clave de host y el modelo de ML.
+- `cap_drop: ALL`. Todos sus puertos son mayores a 1024, así que no necesita capacidades de Linux.
+- `no-new-privileges`, un límite de procesos (`pids_limit`) y un límite de memoria.
+
+La carpeta `logs/` del host tiene que pertenecer al UID 10001, o el contenedor no puede escribir en ella. Si se migra un despliegue que antes corría como root:
+
+```bash
+sudo chown -R 10001:10001 logs
+```
+
+### Por qué paramiko se queda en la 4.0.0
+
+paramiko 4.0.0 está afectado por el CVE-2026-44405 (permite SHA-1 en firmas RSA, CVSS 3.4, sin explotación pública conocida). La versión 5 elimina SHA-1 por completo, y probé qué cambia acá: un cliente OpenSSH que ofrece solo `diffie-hellman-group14-sha1` negocia con la 4.0.0 y es rechazado por la 5.1.0 ("no matching key exchange method found"). Los clientes modernos no notan nada.
+
+Para un servidor SSH normal, esa es la decisión correcta. Para un honeypot es al revés: no protege datos reales, y los escáneres viejos y las botnets de IoT que solo hablan SHA-1 son justo el tráfico que quiero observar. Por eso me quedo en la 4.0.0 durante la ventana de medición, con esto documentado, y más adelante comparo contra la 5.x. `pip-audit` va a marcar el CVE, y la justificación de arriba es la excepción aceptada.
+
+La suite de tests pasa en las dos versiones, así que subir es un cambio de una línea en `requirements.txt` (la 5.x además necesita `invoke` 3.0.3).
 
 ### Variables de entorno
 
