@@ -27,3 +27,14 @@ services:
         max-size: "10m"
         max-file: "3"
     restart: unless-stopped    # Se reinicia automáticamente si falla
+    # --- Endurecimiento del contenedor ---
+    # El honeypot recibe trafico hostil: se le saca todo lo que no necesita.
+    read_only: true            # El sistema de archivos del contenedor es de solo lectura
+    tmpfs:
+      - /tmp                   # Espacio temporal en memoria (se borra al reiniciar)
+    cap_drop:
+      - ALL                    # Sin capacidades de Linux: no usa puertos bajos ni toca la red a bajo nivel
+    security_opt:
+      - no-new-privileges:true # Ningun proceso puede ganar privilegios (por ejemplo via setuid)
+    pids_limit: 1024           # Tope de procesos e hilos (cada conexion usa uno): frena una fuga o un ataque de agotamiento
+    mem_limit: 1g              # Tope de memoria

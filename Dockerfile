@@ -19,12 +19,18 @@ COPY requirements.txt .
 # Instalar dependencias de Python (todas tienen wheels precompilados para Debian)
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar el resto del código
+# Usuario sin privilegios: el honeypot esta expuesto a internet y no necesita ser root.
+# Si alguien lograra ejecutar codigo dentro del contenedor, no tendria permisos de root.
+# Los puertos del honeypot son todos mayores a 1024, asi que no hace falta ningun privilegio especial.
+RUN groupadd --system --gid 10001 honeypot \
+ && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin honeypot
+
+# Copiar el resto del código (los archivos quedan como solo lectura para el usuario honeypot)
 COPY *.py .
 COPY templates/ templates/
 
-# Crear la carpeta de logs dentro del contenedor
-RUN mkdir -p logs
+# Carpeta de logs: es lo unico donde el honeypot escribe (en produccion es un volumen)
+RUN mkdir -p logs && chown honeypot:honeypot logs
 
 # Exponer los puertos que usa el honeypot
 # EXPOSE es documentación — le dice a Docker qué puertos usa la app
@@ -36,9 +42,14 @@ EXPOSE 2121
 # Se pueden sobreescribir al correr el contenedor
 # Salida sin buffer: que los mensajes aparezcan al instante en docker compose logs
 ENV PYTHONUNBUFFERED=1
+# El sistema de archivos es de solo lectura: no intentar escribir archivos .pyc
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV GEO_ENABLED=true
 ENV EMAIL_ENABLED=false
 ENV THREAT_INTEL_ENABLED=false
+
+# A partir de aca todo corre sin root
+USER honeypot
 
 # Comando que se ejecuta cuando arranca el contenedor
 CMD ["python", "honeypot.py"]
