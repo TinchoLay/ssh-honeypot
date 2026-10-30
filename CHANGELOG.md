@@ -21,6 +21,19 @@ No cambia lo que ve un atacante (paramiko sigue en la 4.0.0, y el handshake SSH 
 - Eight dependencies moved to fixed versions after the first `pip-audit`: certifi, cryptography (46.0.6 to 50.0.2), filelock, idna, python-engineio, python-socketio, urllib3, Werkzeug. The tests pass on the new versions; the rebuilt container started without errors.
   Ocho dependencias pasaron a versiones corregidas tras el primer `pip-audit`: certifi, cryptography (de 46.0.6 a 50.0.2), filelock, idna, python-engineio, python-socketio, urllib3, Werkzeug. Los tests pasan con las versiones nuevas; el contenedor reconstruido arrancó sin errores.
 
+## 2026-10-30 (analysis tooling fix, no container change / corrección de la herramienta de análisis, sin cambios en el contenedor)
+
+Does not change what an attacker sees and does not need a redeploy: only `resumen_diario.py` on the host changes.
+No cambia lo que ve un atacante ni requiere volver a desplegar: solo cambia `resumen_diario.py` en el host.
+
+### Fixed / Corregido
+- The IP mask in `resumen_diario.py` was reversible. The suffix was an unsalted SHA-256 cut to 6 hex characters; with the first two octets visible only 65,536 addresses are possible, so anyone could recover the full IP by trying them all. It is now an HMAC-SHA256 with a secret salt (`RESUMEN_SALT` or `~/.honeypot_resumen_salt`, created with mode 600 and kept out of git), and the suffix is 8 characters. **The suffixes change**: the ones in older notes no longer match. The script refuses to mask without a salt, so it can never fall back to the weak version. 6 new tests (175 in total).
+  La máscara de IP de `resumen_diario.py` era reversible. El sufijo era un SHA-256 sin sal recortado a 6 caracteres hexadecimales; con los dos primeros octetos a la vista solo hay 65.536 direcciones posibles, así que cualquiera podía recuperar la IP completa probándolas todas. Ahora es un HMAC-SHA256 con sal secreta (`RESUMEN_SALT` o `~/.honeypot_resumen_salt`, creado con permisos 600 y fuera de git), y el sufijo tiene 8 caracteres. **Los sufijos cambian**: los de notas anteriores ya no coinciden. El script se niega a enmascarar sin sal, así que nunca puede volver a la versión débil. 6 tests nuevos (175 en total).
+
+### Added / Agregado
+- `HYPOTHESES.md`: public log of the hypotheses, in Spanish, with evidence and inference kept apart. No IPs, no suffixes.
+  `HYPOTHESES.md`: registro público de las hipótesis, en español, con evidencia e inferencia separadas. Sin IPs ni sufijos.
+
 ## 2026-10-29 (analysis tooling, no container change / herramienta de análisis, sin cambios en el contenedor)
 
 Does not change what an attacker sees and does not need a redeploy: the script runs on the host, outside the container, and only reads the logs. The measurement window keeps running.

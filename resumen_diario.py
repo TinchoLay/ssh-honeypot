@@ -7,11 +7,14 @@ la libreria estandar, asi que corre en el servidor sin instalar nada:
     cd ~/honeypot-aws
     python3 resumen_diario.py                 # ultimas 24 horas
     python3 resumen_diario.py --horas 72      # ventana mas larga
-    python3 resumen_diario.py --ip a3f9c1     # linea de tiempo completa de una IP
+    python3 resumen_diario.py --ip a3f9c1d2   # linea de tiempo completa de una IP
 
 Decisiones de diseno:
-- Las IPs salen enmascaradas: "203.0.x.x#a3f9c1". El sufijo es un hash estable, asi la
-  misma IP se reconoce de un dia al otro sin publicarla. --sin-mascara las muestra enteras.
+- Las IPs salen enmascaradas: "203.0.x.x#a3f9c1d2". El sufijo es un HMAC-SHA256 con una sal
+  secreta (RESUMEN_SALT o ~/.honeypot_resumen_salt, fuera de git y del contenedor), asi la misma
+  IP se reconoce de un dia al otro y nadie sin la sal puede recuperarla. Un hash simple NO
+  alcanza: con los dos primeros octetos a la vista quedan 65.536 IPs posibles y se prueban todas
+  en milisegundos. Si se pierde la sal, los sufijos cambian. --sin-mascara muestra las IPs enteras.
 - Todo lo que viene del atacante (usuario, clave, comando, ruta HTTP) se limpia de
   caracteres de control y se recorta. Es texto no confiable: si alguien pone una linea
   que parece una instruccion, tiene que llegar como dato, nunca como renglon propio.
@@ -20,10 +23,12 @@ Decisiones de diseno:
 import argparse
 import glob
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
 import re
+import secrets
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
@@ -45,15 +50,45 @@ def limpiar(texto, largo=80):
     return s if len(s) <= largo else s[: largo - 1] + "…"
 
 
+SAL_ARCHIVO = os.path.join(os.path.expanduser("~"), ".honeypot_resumen_salt")
+_SAL = None
+
+
+def fijar_sal(sal):
+    """Define la sal del enmascarado (bytes). Sin sal, mascara() se niega a trabajar."""
+    global _SAL
+    if len(sal) < 16:
+        raise ValueError("la sal es demasiado corta (minimo 16 bytes)")
+    _SAL = sal
+
+
+def cargar_sal(ruta=SAL_ARCHIVO):
+    """RESUMEN_SALT si existe; si no, el archivo (se crea con permisos 600 la primera vez)."""
+    env = os.environ.get("RESUMEN_SALT")
+    if env:
+        return env.encode()
+    try:
+        with open(ruta, "rb") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        sal = secrets.token_hex(32).encode()
+        fd = os.open(ruta, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(sal + b"\n")
+        return sal
+
+
 def mascara(ip, mostrar=False):
-    """203.0.113.7 -> 203.0.x.x#a3f9c1 (el hash identifica la IP completa)."""
+    """203.0.113.7 -> 203.0.x.x#a3f9c1d2 (HMAC con sal secreta de la IP completa)."""
     if mostrar:
         return limpiar(ip, 45)
     try:
         ipaddress.ip_address(ip)
     except ValueError:
         return limpiar(ip, 40)
-    h = hashlib.sha256(ip.encode()).hexdigest()[:6]
+    if _SAL is None:
+        raise RuntimeError("falta la sal del enmascarado: llamar a fijar_sal() antes")
+    h = hmac.new(_SAL, ip.encode(), hashlib.sha256).hexdigest()[:8]
     if ":" in ip:
         return f"{ip.split(':')[0]}:x#{h}"
     o = ip.split(".")
@@ -281,6 +316,7 @@ def main(argv=None):
     ap.add_argument("--sin-mascara", action="store_true", help="mostrar las IPs completas")
     ap.add_argument("--ignorar", action="append", default=[], help="IP a ignorar (se puede repetir)")
     a = ap.parse_args(argv)
+    fijar_sal(cargar_sal())
 
     hasta = datetime.strptime(a.hasta, FORMATO) if a.hasta else datetime.now()
     desde = hasta - timedelta(hours=a.horas)

@@ -2,10 +2,23 @@
 import json
 from datetime import datetime, timedelta
 
+import pytest
+
 import resumen_diario as rd
 
 IP = "8.8.4.4"            # IP publica de ejemplo; los rangos de documentacion cuentan como privados
 AHORA = datetime(2026, 10, 29, 20, 0, 0)
+
+
+@pytest.fixture(autouse=True)
+def sal_de_prueba(monkeypatch):
+    """Sal fija solo para estos tests; se restaura al terminar. Con RESUMEN_SALT definida, main()
+    no crea el archivo de sal en el HOME real."""
+    monkeypatch.setenv("RESUMEN_SALT", "sal-de-prueba-solo-para-tests-0123456789")
+    anterior = rd._SAL
+    rd.fijar_sal(b"sal-de-prueba-solo-para-tests-0123456789")
+    yield
+    rd._SAL = anterior
 
 
 def _ev(minutos_atras, tipo, ip=IP, **campos):
@@ -43,6 +56,46 @@ def test_mascara_no_muestra_la_ip_completa_y_es_estable():
 
 def test_mascara_distingue_ips_del_mismo_rango():
     assert rd.mascara("8.8.4.1") != rd.mascara("8.8.4.2")
+
+
+def test_mascara_no_se_puede_revertir_con_un_hash_simple():
+    """Con un SHA-256 sin sal, el sufijo se recupera probando las 65.536 IPs del rango visible."""
+    import hashlib
+    sufijo = rd.mascara(IP).split("#")[1]
+    ingenuos = {hashlib.sha256(f"8.8.{c}.{d}".encode()).hexdigest()[:len(sufijo)]
+                for c in range(256) for d in range(256)}
+    assert sufijo not in ingenuos
+
+
+def test_la_sal_cambia_el_sufijo():
+    a = rd.mascara(IP)
+    rd.fijar_sal(b"otra-sal-distinta-0123456789abcdef")
+    assert rd.mascara(IP) != a
+
+
+def test_sin_sal_se_niega_a_enmascarar():
+    rd._SAL = None
+    with pytest.raises(RuntimeError):
+        rd.mascara(IP)
+
+
+def test_una_sal_corta_se_rechaza():
+    with pytest.raises(ValueError):
+        rd.fijar_sal(b"corta")
+
+
+def test_cargar_sal_crea_el_archivo_con_permisos_600_y_es_estable(tmp_path, monkeypatch):
+    monkeypatch.delenv("RESUMEN_SALT", raising=False)
+    ruta = tmp_path / "sal"
+    a = rd.cargar_sal(str(ruta))
+    assert len(a) >= 32 and oct(ruta.stat().st_mode & 0o777) == "0o600"
+    assert rd.cargar_sal(str(ruta)) == a
+
+
+def test_cargar_sal_prefiere_la_variable_de_entorno(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESUMEN_SALT", "desde-el-entorno-0123456789abcdef")
+    assert rd.cargar_sal(str(tmp_path / "no-existe")) == b"desde-el-entorno-0123456789abcdef"
+    assert not (tmp_path / "no-existe").exists()
 
 
 def test_limpiar_aplana_y_recorta():
