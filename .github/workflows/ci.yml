@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Mondays 09:00 UTC. New advisories show up without any change in the code.
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Same Python as the container (see Dockerfile).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: pytest
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pip-audit==2.10.1
+      # Every dependency is pinned, so there is nothing to resolve (--no-deps).
+      # The single accepted exception is CVE-2026-44405 (paramiko 4.0.0 still
+      # offers SHA-1 for RSA signatures). Reasons: README, "Why paramiko stays on 4.0.0".
+      - name: Audit pinned dependencies
+        run: pip-audit -r requirements.txt --disable-pip --no-deps --ignore-vuln CVE-2026-44405

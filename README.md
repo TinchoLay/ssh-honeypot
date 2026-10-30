@@ -1,5 +1,7 @@
 # SSH Honeypot
 
+[![CI](https://github.com/TinchoLay/ssh-honeypot/actions/workflows/ci.yml/badge.svg)](https://github.com/TinchoLay/ssh-honeypot/actions/workflows/ci.yml)
+
 **[English](#english) | [Español](#español)**
 
 ---
@@ -170,6 +172,28 @@ sudo docker compose exec honeypot python backfill_geo.py
 
 It makes one lookup per unique IP and waits between requests to stay under the free rate limit of ip-api.com (about 45 per minute). In my last run it updated 183 events from 89 IPs, with none left without data.
 
+### Daily summary for analysis
+
+`resumen_diario.py` turns the five JSON logs into a short text report of what happened in a time window. It runs on the server next to the logs and needs nothing beyond Python:
+
+```bash
+cd ~/honeypot-aws
+python3 resumen_diario.py                  # last 24 hours
+python3 resumen_diario.py --horas 72       # longer window
+python3 resumen_diario.py --ip a3f9c1      # full timeline of one IP
+python3 resumen_diario.py --ignorar 172.18.0.1
+```
+
+I use it for a daily routine: read the report, pick the one or two behaviors that stand out, write a hypothesis, and decide whether it is worth a Wazuh rule or needs more days of data. Each hypothesis is recorded with its evidence, so wrong ones stay visible too.
+
+- **IPs are masked.** `203.0.113.7` appears as `203.0.x.x#a3f9c1`. The suffix is a hash of the full address, so the same IP is recognized from one day to the next without publishing it. `--sin-mascara` shows them whole.
+- **It remembers.** The report separates new IPs from ones seen in the previous 30 days (`--historial-dias`), and lists the recent history of the recurring ones.
+- **Flags are triage, not conclusions.** An IP gets flags such as `recurrente`, `ritmo lento` (several days, at most two attempts per day), `autentico y se fue` or `ejecuto comandos`. They only decide what to read first.
+- **Attacker text is untrusted.** Usernames, passwords, commands and URLs are stripped of control characters and shortened, so a hostile string cannot pass as a line of its own in the report.
+- **Probe commands are grouped.** The bots' shell checks change only in a random hash and a few numbers, so they collapse into one line.
+
+It does not touch the honeypot or the container, so running it does not affect the measurement window.
+
 ### Project structure
 
 ```
@@ -177,6 +201,7 @@ honeypot-aws/
 ├── honeypot.py          # Entry point, starts all services
 ├── fake_shell.py        # Fake interactive SSH shell and authentication
 ├── shell_interp.py      # Mini interpreter: printf, arithmetic, $$, functions (no eval)
+├── resumen_diario.py    # Daily summary of the logs, with masked IPs (standard library only)
 ├── weak_passwords.py    # Weak and default credentials that get accepted
 ├── http_honeypot.py     # HTTP honeypot server
 ├── ftp_honeypot.py      # FTP honeypot server
@@ -186,6 +211,7 @@ honeypot-aws/
 ├── stats.py             # Console stats
 ├── mapa.py              # Static map generator (folium)
 ├── dashboard.py         # Flask and WebSockets dashboard
+├── dashboard_auth.py    # Dashboard login: one password, session cookie, websocket included
 ├── ml_classifier.py     # ML attacker classification
 ├── fingerprint.py       # Tool identification
 ├── malware_capture.py   # Malware capture and analysis
@@ -253,6 +279,8 @@ The suite covers the fake shell and its interpreter, the login rules and full SS
 - **The bot's shell check, verbatim.** `tests/fixtures/examen_shell.txt` holds the seven commands exactly as they were logged (only the random hash is replaced). They run in-process and through a real SSH client, one connection per command, as the bots do.
 - **Arithmetic and safety.** Operator precedence, C-style division and modulo, 64-bit wraparound, and a set of inputs that must be rejected: Python code inside `$(( ))`, `9**9**9`, huge shifts and deeply nested parentheses.
 - **Fuzzing.** `tests/test_fuzz_shell.py` throws random mixes of shell metacharacters at the shell with fixed seeds. The rule is simple: nothing raises and nothing takes more than half a second. The first run found a crash (`$VAR` on an unset variable left no command to run), now fixed and covered.
+- **Daily summary (`tests/test_resumen_diario.py`).** Masking that never shows the full address, hostile text flattened to one line, probe commands grouped, the slow-pace flag firing for one attempt per day and not for a fast burst, private and ignored IPs left out, and a run from the command line.
+- **Dashboard login (`tests/test_dashboard_auth.py`).** The dashboard is locked without a password, pages redirect and the API answers 401 without a login, wrong and empty passwords never get a session, the lockout after five failures lifts with time, the cookie flags, and the websocket refused without a login, after logout and for a second browser, including the real Socket.IO handshake over HTTP.
 
 ### Local setup
 
@@ -312,6 +340,32 @@ For a normal SSH server that is the right trade. For a honeypot it is the opposi
 
 The test suite passes on both versions, so the upgrade itself is a one-line change in `requirements.txt` (5.x also needs `invoke` 3.0.3).
 
+### Continuous integration and dependency audit
+
+`.github/workflows/ci.yml` runs on every push and pull request, and every Monday:
+
+- `pytest` on Python 3.11, the version in the Dockerfile.
+- `pip-audit` on `requirements.txt`. Every dependency is pinned, so the audit checks exactly what the container installs. The only accepted exception is CVE-2026-44405 (see above). Any other advisory fails the build.
+
+The weekly run matters because new advisories appear without any change in the code.
+
+**What the first audit found (2026-10-30).** Besides paramiko, eight pinned packages had known advisories: certifi, cryptography, filelock, idna, python-engineio, python-socketio, urllib3 and Werkzeug. Two groups matter most here. idna and urllib3 sit on the path of `malware_capture.py`, which fetches URLs chosen by the attacker (the SSRF check is separate and unchanged). python-engineio and python-socketio serve the dashboard websocket. I moved all eight to fixed versions in one step, including `cryptography` from 46.0.6 to 50.0.2, which is a big jump. Evidence: the whole test suite passes on the new versions (including a real paramiko session) and `pip-audit` reports only the accepted paramiko exception. I also compared the key exchange packet the server sends (KEXINIT: key exchange, host key, cipher and MAC lists) under `cryptography` 46.0.6 and 50.0.2, and the lists are identical, so what an attacker sees in the SSH handshake does not change. Not covered: I have not run the rebuilt container yet, so the first deploy gets a close look at the logs.
+
+Limits: `pip-audit` only knows published advisories, and it says nothing about the honeypot's own code.
+
+### Dashboard login
+
+The dashboard asks for a password. It was already reachable only through an SSH tunnel, so this is a second layer: someone who reaches the port (a shared tunnel, another user on the server, a web page pointing at `localhost:5000`) still needs the password.
+
+- **Where the password lives.** `DASHBOARD_PASSWORD` in the `.env` file next to `docker-compose.yml`, outside git like the other secrets. To create one on the server without printing it: `echo "DASHBOARD_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=')" >> .env`, then `chmod 600 .env`.
+- **Locked, not open.** With no password set, every route answers 503 instead of showing data. `DASHBOARD_AUTH=off` turns the login off on purpose, for local development only.
+- **The websocket is covered.** Socket.IO serves `/socket.io/` before Flask sees the request, so a normal login check misses it. The `connect` handler checks the session and refuses without a login. The tests walk the protocol's real HTTP handshake, not only the test client, and breaking that check makes six of them fail.
+- **Cookie and brute force.** Signed cookie, `HttpOnly`, `SameSite=Strict`, 12-hour session. Five wrong passwords within five minutes lock the login for one minute.
+
+Two things I fixed on the way. The key that signs the cookies was a fixed string in the code, and the websocket accepted any origin (`cors_allowed_origins="*"`). Now the key comes from `DASHBOARD_SECRET_KEY` or is random at each start, and the websocket only accepts the same origin as the page.
+
+Limits: one shared password, no second factor, and the attempt limit is global because behind the tunnel everyone arrives as the same address. A client without a login can still open an Engine.IO session, but the server refuses the namespace and sends it nothing.
+
 ### Environment variables
 
 ```bash
@@ -327,6 +381,9 @@ THREAT_INTEL_ENABLED=false    # AbuseIPDB and Shodan lookups (default: false)
 ABUSEIPDB_KEY=your_api_key
 SHODAN_KEY=your_api_key
 VIRUSTOTAL_KEY=your_api_key
+DASHBOARD_PASSWORD=           # Dashboard login. Empty = dashboard locked (503)
+DASHBOARD_SECRET_KEY=         # Optional: signs the session cookies (random at each start if empty)
+DASHBOARD_AUTH=               # off = no login, for local development only
 ```
 
 ### What real internet traffic looks like
@@ -536,6 +593,28 @@ sudo docker compose exec honeypot python backfill_geo.py
 
 Hace una consulta por IP única y espera entre pedidos para quedar bajo el límite gratuito de ip-api.com (unas 45 por minuto). En mi última corrida actualizó 183 eventos de 89 IPs, sin ninguna sin dato.
 
+### Resumen diario para el análisis
+
+`resumen_diario.py` convierte los cinco logs JSON en un informe de texto corto con lo que pasó en una ventana de tiempo. Corre en el servidor, junto a los logs, y no necesita nada más que Python:
+
+```bash
+cd ~/honeypot-aws
+python3 resumen_diario.py                  # últimas 24 horas
+python3 resumen_diario.py --horas 72       # ventana más larga
+python3 resumen_diario.py --ip a3f9c1      # línea de tiempo completa de una IP
+python3 resumen_diario.py --ignorar 172.18.0.1
+```
+
+Lo uso en una rutina diaria: leo el informe, elijo uno o dos comportamientos que se destacan, escribo una hipótesis y decido si vale una regla de Wazuh o si hacen falta más días de datos. Cada hipótesis queda registrada con su evidencia, así que las equivocadas también quedan a la vista.
+
+- **Las IPs salen enmascaradas.** `203.0.113.7` aparece como `203.0.x.x#a3f9c1`. El sufijo es un hash de la dirección completa, así la misma IP se reconoce de un día al otro sin publicarla. `--sin-mascara` las muestra enteras.
+- **Tiene memoria.** El informe separa las IPs nuevas de las vistas en los 30 días anteriores (`--historial-dias`) y lista el historial reciente de las recurrentes.
+- **Las banderas son para decidir qué mirar primero, no son conclusiones.** Una IP puede recibir `recurrente`, `ritmo lento` (varios días, como mucho dos intentos por día), `autentico y se fue` o `ejecuto comandos`.
+- **El texto del atacante no es de fiar.** Usuarios, contraseñas, comandos y URLs se limpian de caracteres de control y se acortan, para que una cadena hostil no pueda pasar por una línea propia del informe.
+- **Las sondas se agrupan.** Las verificaciones de shell de los bots solo cambian en un hash al azar y unos números, así que se juntan en una sola línea.
+
+No toca el honeypot ni el contenedor, así que correrlo no afecta la ventana de medición.
+
 ### Estructura del proyecto
 
 ```
@@ -543,6 +622,7 @@ honeypot-aws/
 ├── honeypot.py          # Punto de entrada, arranca todos los servicios
 ├── fake_shell.py        # Shell SSH interactiva falsa y autenticación
 ├── shell_interp.py      # Mini intérprete: printf, aritmética, $$, funciones (sin eval)
+├── resumen_diario.py    # Resumen diario de los logs, con IPs enmascaradas (solo librería estándar)
 ├── weak_passwords.py    # Credenciales débiles y de fábrica que se aceptan
 ├── http_honeypot.py     # Servidor HTTP honeypot
 ├── ftp_honeypot.py      # Servidor FTP honeypot
@@ -552,6 +632,7 @@ honeypot-aws/
 ├── stats.py             # Estadísticas en consola
 ├── mapa.py              # Generador de mapa estático (folium)
 ├── dashboard.py         # Dashboard Flask y WebSockets
+├── dashboard_auth.py    # Login del dashboard: una clave, cookie de sesión, websocket incluido
 ├── ml_classifier.py     # Clasificación ML de atacantes
 ├── fingerprint.py       # Identificación de herramientas
 ├── malware_capture.py   # Captura y análisis de malware
@@ -619,6 +700,8 @@ La suite cubre la shell falsa y su intérprete, las reglas de login y sesiones S
 - **La verificación del bot, tal cual.** `tests/fixtures/examen_shell.txt` guarda los siete comandos exactamente como se registraron (solo se reemplazó el hash al azar). Se ejecutan en el mismo proceso y con un cliente SSH real, una conexión por comando, como hacen los bots.
 - **Aritmética y seguridad.** Precedencia de operadores, división y módulo al estilo C, desborde a 64 bits, y un conjunto de entradas que deben rechazarse: código Python dentro de `$(( ))`, `9**9**9`, desplazamientos enormes y paréntesis anidados en exceso.
 - **Fuzzing.** `tests/test_fuzz_shell.py` le tira a la shell mezclas al azar de metacaracteres con semillas fijas. La regla es simple: nada lanza una excepción y nada tarda más de medio segundo. La primera corrida encontró un fallo (`$VAR` sobre una variable sin definir dejaba sin comando para ejecutar), ya corregido y cubierto.
+- **Resumen diario (`tests/test_resumen_diario.py`).** Enmascarado que nunca muestra la dirección completa, texto hostil aplanado a una línea, sondas agrupadas, la bandera de ritmo lento que salta con un intento por día y no con una ráfaga rápida, IPs privadas e ignoradas fuera del informe, y una corrida desde la línea de comandos.
+- **Login del dashboard (`tests/test_dashboard_auth.py`).** El dashboard queda bloqueado sin contraseña, las páginas redirigen y la API responde 401 sin login, las contraseñas incorrectas y vacías nunca dan sesión, el bloqueo tras cinco fallos se levanta con el tiempo, las banderas de la cookie, y el websocket rechazado sin login, después del logout y para un segundo navegador, incluido el handshake real de Socket.IO por HTTP.
 
 ### Instalación local
 
@@ -678,6 +761,32 @@ Para un servidor SSH normal, esa es la decisión correcta. Para un honeypot es a
 
 La suite de tests pasa en las dos versiones, así que subir es un cambio de una línea en `requirements.txt` (la 5.x además necesita `invoke` 3.0.3).
 
+### Integración continua y auditoría de dependencias
+
+`.github/workflows/ci.yml` corre en cada push y pull request, y todos los lunes:
+
+- `pytest` en Python 3.11, la versión del Dockerfile.
+- `pip-audit` sobre `requirements.txt`. Todas las dependencias están fijadas, así que la auditoría revisa exactamente lo que instala el contenedor. La única excepción aceptada es CVE-2026-44405 (ver arriba). Cualquier otro aviso hace fallar el build.
+
+La corrida semanal importa porque los avisos nuevos aparecen sin que cambie el código.
+
+**Qué encontró la primera auditoría (2026-10-30).** Además de paramiko, ocho paquetes fijados tenían avisos conocidos: certifi, cryptography, filelock, idna, python-engineio, python-socketio, urllib3 y Werkzeug. Dos grupos importan más acá. idna y urllib3 están en el camino de `malware_capture.py`, que descarga URLs elegidas por el atacante (el control de SSRF es aparte y no cambia). python-engineio y python-socketio sirven el websocket del dashboard. Pasé los ocho a versiones corregidas en un solo paso, incluido `cryptography` de la 46.0.6 a la 50.0.2, que es un salto grande. Evidencia: toda la suite de tests pasa con las versiones nuevas (incluida una sesión real de paramiko) y `pip-audit` informa solo la excepción aceptada de paramiko. También comparé el paquete de intercambio de claves que manda el servidor (KEXINIT: listas de intercambio de claves, clave del host, cifrados y MAC) con `cryptography` 46.0.6 y 50.0.2, y las listas son idénticas, así que lo que ve un atacante en el handshake SSH no cambia. Lo que no cubre: todavía no corrí el contenedor reconstruido, así que el primer despliegue se mira de cerca en los logs.
+
+Límites: `pip-audit` solo conoce avisos publicados y no dice nada sobre el código propio del honeypot.
+
+### Login del dashboard
+
+El dashboard pide una contraseña. Ya era accesible solo por túnel SSH, así que esto es una segunda capa: quien llegue al puerto (un túnel compartido, otro usuario del servidor, una página web que apunte a `localhost:5000`) igual necesita la contraseña.
+
+- **Dónde vive la contraseña.** `DASHBOARD_PASSWORD` en el archivo `.env` junto a `docker-compose.yml`, fuera de git como los demás secretos. Para crear una en el servidor sin mostrarla: `echo "DASHBOARD_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=')" >> .env`, y después `chmod 600 .env`.
+- **Bloqueado, no abierto.** Sin contraseña configurada, todas las rutas responden 503 en vez de mostrar datos. `DASHBOARD_AUTH=off` desactiva el login a propósito, solo para desarrollo local.
+- **El websocket también está cubierto.** Socket.IO atiende `/socket.io/` antes de que Flask vea el pedido, así que un chequeo de login común no lo ve. El handler de `connect` revisa la sesión y rechaza si no hay login. Los tests recorren el handshake HTTP real del protocolo, no solo el cliente de pruebas, y si se rompe ese chequeo fallan seis.
+- **Cookie y fuerza bruta.** Cookie firmada, `HttpOnly`, `SameSite=Strict`, sesión de 12 horas. Cinco contraseñas incorrectas en cinco minutos bloquean el login durante un minuto.
+
+Dos cosas que arreglé en el camino. La clave que firma las cookies era un texto fijo en el código, y el websocket aceptaba cualquier origen (`cors_allowed_origins="*"`). Ahora la clave sale de `DASHBOARD_SECRET_KEY` o es aleatoria en cada arranque, y el websocket solo acepta el mismo origen que la página.
+
+Límites: una sola contraseña compartida, sin segundo factor, y el límite de intentos es global porque detrás del túnel todos llegan como la misma dirección. Un cliente sin login todavía puede abrir una sesión de Engine.IO, pero el servidor rechaza el namespace y no le envía nada.
+
 ### Variables de entorno
 
 ```bash
@@ -693,6 +802,9 @@ THREAT_INTEL_ENABLED=false    # Consultas a AbuseIPDB y Shodan (default: false)
 ABUSEIPDB_KEY=tu_api_key
 SHODAN_KEY=tu_api_key
 VIRUSTOTAL_KEY=tu_api_key
+DASHBOARD_PASSWORD=           # Login del dashboard. Vacío = dashboard bloqueado (503)
+DASHBOARD_SECRET_KEY=         # Opcional: firma las cookies de sesión (aleatoria en cada arranque si está vacía)
+DASHBOARD_AUTH=               # off = sin login, solo para desarrollo local
 ```
 
 ### Qué se ve con tráfico real de internet

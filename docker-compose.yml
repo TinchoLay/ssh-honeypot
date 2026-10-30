@@ -20,6 +20,10 @@ services:
       - VIRUSTOTAL_KEY=${VIRUSTOTAL_KEY:-}
       # IPs propias a ignorar (se define en .env, fuera de git). Ej: 203.0.113.5,198.51.100.7
       - HONEYPOT_IGNORE_IPS=${HONEYPOT_IGNORE_IPS:-}
+      # Clave del dashboard (se define en .env, fuera de git). Sin ella el dashboard queda bloqueado.
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-}
+      # Opcional: clave que firma las cookies. Si no esta, se genera una al azar en cada arranque.
+      - DASHBOARD_SECRET_KEY=${DASHBOARD_SECRET_KEY:-}
     # Docker no rota los logs por defecto: con trafico real el archivo crece sin limite
     logging:
       driver: json-file

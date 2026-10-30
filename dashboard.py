@@ -2,14 +2,25 @@ from flask import Flask, render_template, jsonify
 from flask_socketio import SocketIO
 import json
 import os
+import secrets
 import threading
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import LOG_FILE, HTTP_LOG, FTP_LOG
+import dashboard_auth
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "honeypot-dashboard-2026"
-socketio = SocketIO(app, cors_allowed_origins="*")
+# La clave que firma las cookies sale del entorno. Si no esta, se genera al azar en cada arranque:
+# las sesiones se pierden al reiniciar, pero nunca queda una clave fija en el codigo.
+app.config["SECRET_KEY"] = os.getenv("DASHBOARD_SECRET_KEY") or secrets.token_hex(32)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Strict",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+)
+dashboard_auth.registrar(app)
+# Sin cors_allowed_origins="*": el websocket solo acepta el mismo origen que la pagina.
+socketio = SocketIO(app)
 
 
 # ─── CARGA DE DATOS ───────────────────────────────────────────────────────────
@@ -286,6 +297,9 @@ def mapa():
 
 @socketio.on("connect")
 def on_connect():
+    # Socket.IO atiende /socket.io/ antes que Flask: before_request no lo cubre, se valida aca.
+    if not dashboard_auth.socket_autorizado():
+        return False
     attempts = load_all_attempts()
     stats = get_stats(attempts)
     socketio.emit("update", stats)
